@@ -44,6 +44,43 @@ export interface WordPressExport {
 }
 
 /**
+ * Hilfsfunktion: Text Content eines Elements
+ */
+function getTextContent(parent: Element, selector: string): string {
+  const el = parent.querySelector(selector);
+  return el?.textContent?.trim() || '';
+}
+
+/**
+ * Hilfsfunktion: Content eines Tags mit Namespace
+ * WordPress verwendet Namespaces wie wp:, content:, dc: etc.
+ */
+function getTagContent(item: Element, tagName: string): string {
+  // Versuche verschiedene Selektor-Formate
+  const selectors = [
+    tagName, // wp:post_id
+    tagName.replace(':', '\\:'), // wp\:post_id (escaped)
+  ];
+
+  for (const selector of selectors) {
+    const el = item.querySelector(selector);
+    if (el && el.textContent) {
+      return el.textContent.trim();
+    }
+  }
+
+  // Fallback: Suche nach Elementen mit dem Tag-Name
+  const allElements = item.getElementsByTagName('*');
+  for (const el of Array.from(allElements)) {
+    if (el.tagName === tagName || el.tagName.includes(':') && el.tagName.split(':').pop() === tagName.split(':').pop()) {
+      return el.textContent?.trim() || '';
+    }
+  }
+
+  return '';
+}
+
+/**
  * Parst eine WordPress XML Export Datei mit DOMParser
  */
 export async function parseWordPressXML(xmlContent: string): Promise<WordPressExport> {
@@ -99,33 +136,46 @@ export async function parseWordPressXML(xmlContent: string): Promise<WordPressEx
 
     // Items (Media und Posts) parsen
     const items = channel.querySelectorAll('item');
-    items.forEach(item => {
-      const postType = getTagContent(item, 'wp\\:post_type');
-      const postId = getTagContent(item, 'wp\\:post_id');
 
-      if (!postId) return;
+    // Zuerst alle Items sammeln
+    const itemsArray = Array.from(items);
 
-      // Media zuerst parsen
-      if (postType === 'attachment') {
-        const media = parseMediaFromDOM(item, postId);
-        if (media) {
-          exportData.media.set(media.postId, media);
+    // Media zuerst parsen
+    itemsArray.forEach(item => {
+      try {
+        const postType = getTagContent(item, 'wp:post_type');
+        const postId = getTagContent(item, 'wp:post_id');
+
+        if (!postId) return;
+
+        // Media parsen
+        if (postType === 'attachment') {
+          const media = parseMediaFromDOM(item, postId);
+          if (media) {
+            exportData.media.set(media.postId, media);
+          }
         }
+      } catch (error) {
+        console.error('Fehler beim Parsen von Item:', error);
       }
     });
 
-    // Posts parsen
-    items.forEach(item => {
-      const postType = getTagContent(item, 'wp\\:post_type');
+    // Dann Posts parsen
+    itemsArray.forEach(item => {
+      try {
+        const postType = getTagContent(item, 'wp:post_type');
+        const postId = getTagContent(item, 'wp:post_id');
 
-      if (postType === 'post' || postType === 'page') {
-        const postId = getTagContent(item, 'wp\\:post_id');
         if (!postId) return;
 
-        const post = parsePostFromDOM(item, postId, exportData);
-        if (post) {
-          exportData.posts.push(post);
+        if (postType === 'post' || postType === 'page') {
+          const post = parsePostFromDOM(item, postId, exportData);
+          if (post) {
+            exportData.posts.push(post);
+          }
         }
+      } catch (error) {
+        console.error('Fehler beim Parsen von Post:', error);
       }
     });
 
@@ -139,44 +189,12 @@ export async function parseWordPressXML(xmlContent: string): Promise<WordPressEx
 }
 
 /**
- * Hilfsfunktion: Text Content eines Elements
- */
-function getTextContent(parent: Element, selector: string): string {
-  const el = parent.querySelector(selector);
-  return el?.textContent?.trim() || '';
-}
-
-/**
- * Hilfsfunktion: Content eines Tags (mit namespace)
- */
-function getTagContent(item: Element, tagName: string): string {
-  const el = item.querySelector(tagName);
-  return el?.textContent?.trim() || '';
-}
-
-/**
- * Hilfsfunktion: Alle Tag-Contents
- */
-function getTagContents(item: Element, tagName: string): string[] {
-  const els = item.querySelectorAll(tagName);
-  return Array.from(els).map(el => el.textContent?.trim() || '');
-}
-
-/**
- * Hilfsfunktion: Attribute eines Tags
- */
-function getTagAttributes(item: Element, tagName: string, attr: string): string {
-  const el = item.querySelector(tagName);
-  return el?.getAttribute(attr) || '';
-}
-
-/**
  * Parst ein einzelnes Media-Item aus DOM
  */
 function parseMediaFromDOM(item: Element, postId: string): WordPressMedia | null {
   try {
-    const url = getTagContent(item, 'wp\\:attachment_url');
-    const mimeType = getTagContent(item, 'wp\\:post_mime_type');
+    const url = getTagContent(item, 'wp:attachment_url');
+    const mimeType = getTagContent(item, 'wp:post_mime_type');
 
     let type: WordPressMedia['type'] = 'other';
     if (mimeType?.startsWith('image/')) type = 'image';
@@ -189,8 +207,8 @@ function parseMediaFromDOM(item: Element, postId: string): WordPressMedia | null
       type,
       mimeType,
       title: getTextContent(item, 'title'),
-      caption: getTagContent(item, 'wp\\:post_excerpt') || getTextContent(item, 'excerpt'),
-      altText: getTagContent(item, 'wp\\:attachment_alt'),
+      caption: getTagContent(item, 'wp:post_excerpt') || getTextContent(item, 'excerpt'),
+      altText: getTagContent(item, 'wp:attachment_alt'),
     };
   } catch (error) {
     console.error('Fehler beim Parsen von Media:', error);
@@ -203,13 +221,20 @@ function parseMediaFromDOM(item: Element, postId: string): WordPressMedia | null
  */
 function parsePostFromDOM(item: Element, postId: string, exportData: WordPressExport): WordPressPost | null {
   try {
-    const status = getTagContent(item, 'wp\\:status') || 'draft';
+    const postType = getTagContent(item, 'wp:post_type');
+
+    // Nur Posts importieren (keine Seiten)
+    if (postType !== 'post') return null;
+
+    const status = getTagContent(item, 'wp:status') || 'draft';
 
     // Nur veröffentlichte Posts importieren
     if (status !== 'publish') return null;
 
-    const publishDate = parseDate(getTagContent(item, 'wp\\:post_date_gmt') || getTagContent(item, 'pubDate'));
-    const modifiedDate = parseDate(getTagContent(item, 'wp\\:post_modified_gmt'));
+    const publishDate = parseDate(
+      getTagContent(item, 'wp:post_date_gmt') || getTagContent(item, 'pubDate')
+    );
+    const modifiedDate = parseDate(getTagContent(item, 'wp:post_modified_gmt'));
 
     // Kategorien und Tags
     const categories: string[] = [];
@@ -229,32 +254,46 @@ function parsePostFromDOM(item: Element, postId: string, exportData: WordPressEx
 
     // Media Referenzen
     const media: WordPressMedia[] = [];
-    const postThumbnail = item.querySelector('wp\\:post_thumbnail');
-    if (postThumbnail) {
-      const thumbnailId = getTagContent(postThumbnail, 'wp\\:post_id');
-      if (thumbnailId) {
-        const thumbMedia = exportData.media.get(thumbnailId);
-        if (thumbMedia) {
-          media.push(thumbMedia);
-        }
+    
+    // Versuche post_thumbnail zu finden
+    let postThumbnailId: string | undefined;
+    
+    // Versuche verschiedene Selektoren
+    const thumbnailSelectors = [
+      'wp\\:post_thumbnail',
+      'wp:post_thumbnail',
+    ];
+    
+    for (const selector of thumbnailSelectors) {
+      const thumbnailEl = item.querySelector(selector);
+      if (thumbnailEl) {
+        postThumbnailId = getTagContent(thumbnailEl, 'wp:post_id');
+        if (postThumbnailId) break;
+      }
+    }
+
+    if (postThumbnailId) {
+      const thumbMedia = exportData.media.get(postThumbnailId);
+      if (thumbMedia) {
+        media.push(thumbMedia);
       }
     }
 
     return {
       postId,
-      postType: getTagContent(item, 'wp\\:post_type') || 'post',
+      postType: postType || 'post',
       title: getTextContent(item, 'title') || 'Ohne Titel',
-      content: getTagContent(item, 'content\\:encoded') || getTextContent(item, 'description') || '',
-      excerpt: getTagContent(item, 'excerpt\\:encoded') || getTagContent(item, 'wp\\:post_excerpt'),
+      content: getTagContent(item, 'content:encoded') || getTextContent(item, 'description') || '',
+      excerpt: getTagContent(item, 'excerpt:encoded') || getTagContent(item, 'wp:post_excerpt'),
       status,
       publishDate,
       modifiedDate,
-      author: getTagContent(item, 'dc\\:creator'),
+      author: getTagContent(item, 'dc:creator'),
       categories,
       tags,
-      featuredMedia: postThumbnail ? getTagContent(postThumbnail, 'wp\\:post_id') : undefined,
+      featuredMedia: postThumbnailId,
       media,
-      slug: getTagContent(item, 'wp\\:post_name'),
+      slug: getTagContent(item, 'wp:post_name'),
       guid: item.querySelector('guid')?.textContent,
     };
   } catch (error) {
