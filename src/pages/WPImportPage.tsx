@@ -18,6 +18,13 @@ import { SettingsPanel } from '@/components/wp-import/SettingsPanel';
 import { parseWordPressXML, type WordPressPost } from '@/modules/parser/WordPressParser';
 import { convertHTMLToMarkdown, validateMarkdown, extractImageUrls } from '@/modules/converter/HTMLToMarkdown';
 import { uploadFiles, validateFileForUpload, type UploadProgress } from '@/modules/uploader/BlossomUploader';
+import {
+  downloadMedias,
+  extractImageUrlsFromArticle,
+  replaceUrlsInMarkdown,
+  type DownloadedMedia,
+  type DownloadProgress
+} from '@/modules/uploader/MediaDownloader';
 import { publishArticles, validateArticleData, type PublishProgress } from '@/modules/publisher/NostrPublisher';
 import { loadConfig, type ImportConfig } from '@/modules/config/ConfigManager';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
@@ -62,7 +69,7 @@ export function WPImportPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
-  
+
   // Progress
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
   const [totalProgress, setTotalProgress] = useState(0);
@@ -106,13 +113,13 @@ export function WPImportPage() {
     try {
       const content = await file.text();
       const data = await parseWordPressXML(content);
-      
+
       setParsedData(data.posts);
       updateProgress({ status: 'completed', message: `${data.posts.length} Artikel gefunden` });
-      
+
       // Artikel konvertieren
       addProgressStep('Artikel konvertieren', 'in-progress');
-      
+
       const articles = new Map<string, ConvertedArticle>();
       let convertedCount = 0;
 
@@ -127,7 +134,7 @@ export function WPImportPage() {
 
           const validation = validateMarkdown(markdown);
           const imageUrls = extractImageUrls(post.content);
-          
+
           articles.set(post.postId, {
             post,
             markdown,
@@ -136,7 +143,7 @@ export function WPImportPage() {
             selected: true,
             mediaUrls: new Map(),
           });
-          
+
           convertedCount++;
           updateProgress({
             message: `${convertedCount}/${data.posts.length} Artikel konvertiert`,
@@ -148,11 +155,11 @@ export function WPImportPage() {
       }
 
       setConvertedArticles(articles);
-      updateProgress({ 
-        status: 'completed', 
-        message: `${articles.size} Artikel erfolgreich konvertiert` 
+      updateProgress({
+        status: 'completed',
+        message: `${articles.size} Artikel erfolgreich konvertiert`
       });
-      
+
       setTotalProgress(50);
 
       toast({
@@ -173,7 +180,7 @@ export function WPImportPage() {
   };
 
   const handleUploadMedia = async () => {
-    if (!user) {
+    if (!user || !user.signer) {
       toast({
         title: 'Nicht eingeloggt',
         description: 'Bitte loggen Sie sich ein um Medien hochzuladen',
@@ -192,19 +199,20 @@ export function WPImportPage() {
     }
 
     setIsUploading(true);
-    addProgressStep('Medien hochladen', 'in-progress');
+    addProgressStep('Medien herunterladen', 'in-progress');
 
     try {
-      let totalFiles = 0;
-      let uploadedCount = 0;
-
       const articles = new Map(convertedArticles);
-      const allFiles: File[] = [];
+      const allImageUrls = new Set<string>();
+      const allDownloadedMedias: DownloadedMedia[] = [];
+      let totalFiles = 0;
+      let downloadedCount = 0;
 
-      // Alle Bild-URLs sammeln
+      // Alle Bild-URLs aus ausgewählten Artikeln sammeln
       articles.forEach((article) => {
         if (article.selected) {
-          const imageUrls = extractImageUrls(article.post.content);
+          const imageUrls = extractImageUrlsFromArticle(article.post.content);
+          imageUrls.forEach(url => allImageUrls.add(url));
           totalFiles += imageUrls.length;
         }
       });
@@ -215,20 +223,109 @@ export function WPImportPage() {
         return;
       }
 
-      // TODO: Bilder herunterladen und hochladen
-      // Da wir keine direkten Downloads machen können, zeigen wir hier nur die Logik
-      
       updateProgress({
-        message: `${uploadedCount}/${totalFiles} Medien hochgeladen`,
-        percentage: 100,
+        message: `${downloadedCount}/${totalFiles} Medien gefunden`,
+        percentage: Math.round((downloadedCount / totalFiles) * 50),
       });
-      
-      setTotalProgress(75);
-      updateProgress({ status: 'completed', message: 'Medien erfolgreich hochgeladen' });
-      
+
+      // URLs zu Array konvertieren
+      const urlArray = Array.from(allImageUrls);
+
+      // Medien herunterladen
+      addProgressStep('Medien herunterladen', 'in-progress');
+
+      // CORS Proxy für Downloads verwenden
+      const corsProxy = 'https://proxy.shakespeare.diy/?url={href}';
+
+      const downloadedMedias = await downloadMedias(
+        urlArray,
+        (progress) => {
+          updateProgress({
+            message: `${progress.completed}/${progress.total} Medien heruntergeladen`,
+            percentage: Math.round((progress.completed / progress.total) * 50),
+          });
+        },
+        corsProxy
+      );
+
+      downloadedCount = downloadedMedias.length;
+
+      if (downloadedCount === 0) {
+        updateProgress({ status: 'completed', message: 'Keine Medien konnten heruntergeladen werden' });
+        setIsUploading(false);
+        toast({
+          title: 'Keine Medien',
+          description: 'Keine Medien konnten heruntergeladen werden',
+        });
+        return;
+      }
+
+      updateProgress({
+        status: 'completed',
+        message: `${downloadedCount}/${totalFiles} Medien erfolgreich heruntergeladen`,
+      });
+
+      setTotalProgress(50);
+
+      // Zu Blossom hochladen
+      addProgressStep('Medien zu Blossom hochladen', 'in-progress');
+
+      const sign = async (event: any) => {
+        const signed = await user.signer.signEvent(event);
+        return signed;
+      };
+
+      const uploadResults = await uploadFiles(
+        downloadedMedias.map(m => m.file),
+        {
+          servers: config.blossomServers,
+          maxRetries: 3,
+          timeout: 60000,
+        },
+        (progress) => {
+          updateProgress({
+            message: `${progress.completed}/${progress.total} Medien hochgeladen`,
+            percentage: 50 + Math.round((progress.completed / progress.total) * 40),
+          });
+          setTotalProgress(50 + (progress.percentage / 2.5));
+        },
+        sign
+      );
+
+      // URL-Map erstellen (Original URL -> Blossom URL)
+      const urlMap = new Map<string, string>();
+      uploadResults.forEach((result, index) => {
+        urlMap.set(downloadedMedias[index].originalUrl, result.url);
+      });
+
+      // URLs in Markdown ersetzen
+      addProgressStep('URLs ersetzen', 'in-progress');
+      const updatedArticles = new Map<string, ConvertedArticle>();
+
+      articles.forEach((article, postId) => {
+        if (article.selected) {
+          const updatedMarkdown = replaceUrlsInMarkdown(article.markdown, urlMap);
+          updatedArticles.set(postId, {
+            ...article,
+            markdown: updatedMarkdown,
+          });
+        } else {
+          updatedArticles.set(postId, article);
+        }
+      });
+
+      setConvertedArticles(updatedArticles);
+
+      updateProgress({
+        status: 'completed',
+        message: `${uploadResults.length}/${downloadedCount} Medien erfolgreich hochgeladen`,
+      });
+
+      setTotalProgress(90);
+
       toast({
         title: 'Upload abgeschlossen',
-        description: 'Alle Medien wurden erfolgreich hochgeladen',
+        description: `${uploadResults.length} Medien erfolgreich zu Blossom hochgeladen`,
       });
     } catch (error) {
       console.error('Fehler beim Hochladen:', error);
@@ -330,12 +427,12 @@ export function WPImportPage() {
       );
 
       const successCount = results.filter(r => r.relays.some(relay => relay.success)).length;
-      
-      updateProgress({ 
-        status: 'completed', 
-        message: `${successCount}/${selectedArticles.length} Artikel erfolgreich veröffentlicht` 
+
+      updateProgress({
+        status: 'completed',
+        message: `${successCount}/${selectedArticles.length} Artikel erfolgreich veröffentlicht`
       });
-      
+
       setTotalProgress(100);
 
       toast({

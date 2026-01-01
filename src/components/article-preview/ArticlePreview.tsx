@@ -23,16 +23,26 @@ export interface ArticlePreviewProps {
 export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate }: ArticlePreviewProps) {
   // Markdown für Vorschau vereinfacht rendern
   const renderMarkdownPreview = (markdown: string) => {
+    let html = markdown;
+
+    // YouTube Iframes behalten
+    html = html.replace(
+      /<iframe[^>]*src="https:\/\/www\.youtube\.com\/embed\/([^"]+)"[^>]*><\/iframe>/g,
+      '<div class="my-4"><iframe width="560" height="315" src="https://www.youtube.com/embed/$1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>'
+    );
+
     // Einfaches Rendering für Vorschau (in Produktion: markdown-it verwenden)
-    return markdown
+    html = html
       .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mt-4 mb-2">$1</h3>')
       .replace(/^## (.*$)/gim, '<h2 class="text-xl font-bold mt-4 mb-2">$1</h2>')
       .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mt-4 mb-2">$1</h1>')
       .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
       .replace(/\*(.*)\*/gim, '<em>$1</em>')
       .replace(/!\[([^\]]*)\]\(([^)]+)\)/gim, '<div class="my-2 text-sm text-muted-foreground">📷 $1</div>')
-      .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" class="text-blue-500 hover:underline">$1</a>')
+      .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" class="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">$1</a>')
       .replace(/\n/gim, '<br />');
+
+    return html;
   };
 
   return (
@@ -103,7 +113,7 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
             Vorschau
           </div>
           <ScrollArea className="h-64 w-full rounded-md border p-4">
-            <div 
+            <div
               className="prose prose-sm dark:prose-invert max-w-none"
               dangerouslySetInnerHTML={{ __html: renderMarkdownPreview(markdownContent) }}
             />

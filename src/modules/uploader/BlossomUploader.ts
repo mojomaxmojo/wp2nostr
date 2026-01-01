@@ -4,8 +4,7 @@
  */
 
 import type { NostrEvent } from '@nostrify/nostrify';
-import { hmacSha256, sha256 } from '@noble/hashes/sha256';
-import { hexToBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha256';
 
 export interface BlossomServer {
   url: string;
@@ -58,7 +57,7 @@ function getBlossomUploadUrl(serverUrl: string, hash: string): string {
  * Blossom Server Listing URL konstruieren
  */
 function getBlossomListingUrl(serverUrl: string, pubkey: string): string {
-  const baseUrl = serverUrl.replace(//', '')', '');
+  const baseUrl = serverUrl.replace(/\/$/, '');
   return `${baseUrl}/list/${pubkey}`;
 }
 
@@ -84,7 +83,6 @@ async function uploadToServer(
 ): Promise<UploadResult> {
   const formData = new FormData();
   formData.append('file', file);
-  formData.append('sha256', hash);
 
   const uploadUrl = getBlossomUploadUrl(server.url, hash);
 
@@ -99,62 +97,71 @@ async function uploadToServer(
         status: 'uploading',
       });
 
-      // Event mit NIP-94 Tags erstellen (wenn signer vorhanden)
-      const now = Math.floor(Date.now() / 1000);
-      const tags: string[][] = [
-        ['url', uploadUrl],
-        ['m', file.type],
-        ['x', hash],
-        ['size', file.size.toString()],
-        ['published_at', now.toString()],
-      ];
-
-      // Dateiname und Typ
-      if (file.name) tags.push(['name', file.name]);
-      if (file.type) tags.push(['dim', file.type]);
-
-      const event: NostrEvent = {
-        kind: 1063,
-        content: '',
-        created_at: now,
-        tags,
-        pubkey: '', // Wird vom Signer gesetzt
-      };
-
-      // Event signieren (wenn Signer vorhanden)
-      let signedEvent = event;
+      // Authorization Header erstellen (wenn Signer vorhanden)
+      const headers: HeadersInit = {};
       if (sign) {
         try {
-          signedEvent = await sign(event);
+          // Event für Auth erstellen
+          const now = Math.floor(Date.now() / 1000);
+          const authEvent: NostrEvent = {
+            kind: 24242, // Blossom Auth Event
+            content: 'Upload ' + hash,
+            created_at: now,
+            tags: [
+              ['t', 'upload'],
+              ['x', hash],
+            ],
+            pubkey: '',
+          };
+
+          const signedEvent = await sign(authEvent);
+
+          // Blossom Auth Format
+          const authData = JSON.stringify({
+            event: signedEvent,
+          });
+          headers['Authorization'] = `Nostr ${btoa(JSON.stringify(signedEvent))}`;
         } catch (error) {
           console.warn('Event konnte nicht signiert werden, Upload ohne Auth-Header:', error);
         }
       }
 
-      // Authorization Header erstellen (wenn signiertes Event vorhanden)
-      const headers: HeadersInit = {};
-      if (signedEvent.pubkey) {
-        // Blossom Auth Format
-        const authData = JSON.stringify({
-          event: signedEvent,
-        });
-        headers['Authorization'] = `Nostr ${btoa(JSON.stringify(signedEvent))}`;
-      }
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), options.timeout);
 
       const response = await fetch(uploadUrl, {
         method: 'POST',
         headers,
         body: formData,
-        signal: AbortSignal.timeout(options.timeout),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const errorText = await response.text();
         throw new Error(`Upload fehlgeschlagen: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
-      const result = await response.json();
-      
+      // Response kann JSON sein oder nur die URL
+      const contentType = response.headers.get('content-type');
+      let resultUrl = uploadUrl.replace('/upload', `/${hash}`);
+
+      if (contentType?.includes('application/json')) {
+        try {
+          const result = await response.json();
+          resultUrl = result.url || resultUrl;
+        } catch (e) {
+          // Response war kein valides JSON
+        }
+      } else {
+        // Text response - könnte die URL sein
+        const text = await response.text();
+        if (text.startsWith('http')) {
+          resultUrl = text;
+        }
+      }
+
       onProgress?.({
         total: 1,
         completed: 1,
@@ -165,27 +172,26 @@ async function uploadToServer(
       });
 
       return {
-        url: result.url || uploadUrl.replace('/upload', `/${hash}`),
+        url: resultUrl,
         hash,
         size: file.size,
         type: file.type,
         server: server.url,
         nip94Tags: [
-          ['url', result.url || uploadUrl.replace('/upload', `/${hash}`)],
+          ['url', resultUrl],
           ['m', file.type],
           ['x', hash],
           ['size', file.size.toString()],
-          ['published_at', now.toString()],
           file.name ? ['name', file.name] : [],
         ].filter(tag => tag.length > 0) as string[][],
       };
     } catch (error) {
       console.error(`Upload zu ${server.url} fehlgeschlagen (Versuch ${attempt + 1}):`, error);
-      
+
       if (attempt === options.maxRetries - 1) {
         throw new Error(`Upload zu ${server.url} fehlgeschlagen nach ${options.maxRetries} Versuchen: ${error}`);
       }
-      
+
       // Vor erneutem Versuch warten
       await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
     }

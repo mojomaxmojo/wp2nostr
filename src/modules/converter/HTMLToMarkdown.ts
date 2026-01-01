@@ -37,6 +37,11 @@ const YOUTUBE_PATTERNS = [
 ];
 
 /**
+ * YouTube Iframe Template
+ */
+const YOUTUBE_IFRAME_TEMPLATE = (videoId: string) => `\n\n<iframe width="560" height="315" src="https://www.youtube.com/embed/${videoId}" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>\n\n`;
+
+/**
  * Initialisiert Turndown Service
  */
 function createTurndownService(options: ConversionOptions): TurndownService {
@@ -56,33 +61,34 @@ function createTurndownService(options: ConversionOptions): TurndownService {
     filter: 'img',
     replacement: (content: string, node: any) => {
       if (!options.preserveImages) return '';
-      
+
       const alt = node.getAttribute('alt') || '';
       const src = node.getAttribute('src') || '';
       const title = node.getAttribute('title') || '';
-      
+
       if (!src) return '';
-      
+
       const altText = alt || 'image';
       const titleText = title ? ` "${title}"` : '';
-      
+
       return `![${altText}](${src}${titleText})\n`;
     },
   });
 
-  // YouTube Embeds
+  // YouTube Embeds - Iframes behalten
   if (options.convertYouTubeEmbeds) {
-    turndownService.addRule('youtube', {
+    turndownService.addRule('youtube-iframe', {
       filter: (node: any) => {
         if (node.tagName !== 'IFRAME') return false;
         const src = node.getAttribute('src') || '';
-        return src.includes('youtube.com/embed/') || src.includes('youtu.be/');
+        return src.includes('youtube.com/embed/') || src.includes('youtu.be/embed/');
       },
       replacement: (content: string, node: any) => {
         const src = node.getAttribute('src') || '';
         const match = src.match(/(?:embed|v)\/([a-zA-Z0-9_-]+)/);
         if (match) {
-          return `\n\nhttps://www.youtube.com/watch?v=${match[1]}\n\n`;
+          // Iframe als HTML-Block behalten
+          return `<iframe width="560" height="315" src="https://www.youtube.com/embed/${match[1]}" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe>`;
         }
         return '';
       },
@@ -96,23 +102,24 @@ function createTurndownService(options: ConversionOptions): TurndownService {
     },
     replacement: (content: string, node: any) => {
       if (!options.preserveLinks) return content;
-      
+
       const href = node.getAttribute('href') || '';
       if (!href) return content;
-      
+
       // YouTube Links umwandeln
       if (options.convertYouTubeEmbeds) {
         for (const pattern of YOUTUBE_PATTERNS) {
           const match = href.match(pattern);
           if (match) {
-            return `\n\nhttps://www.youtube.com/watch?v=${match[1]}\n\n`;
+            // YouTube Link als Iframe
+            return YOUTUBE_IFRAME_TEMPLATE(match[1]);
           }
         }
       }
-      
+
       const title = node.getAttribute('title');
       const titlePart = title ? ` "${title}"` : '';
-      
+
       return `[${content}](${href}${titlePart})`;
     },
   });
@@ -136,7 +143,7 @@ function createTurndownService(options: ConversionOptions): TurndownService {
     filter: ['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td'],
     replacement: (content: string, node: any) => {
       const tagName = node.tagName.toLowerCase();
-      
+
       if (tagName === 'table') {
         return '\n\n' + content + '\n\n';
       }
@@ -152,7 +159,7 @@ function createTurndownService(options: ConversionOptions): TurndownService {
       if (tagName === 'td') {
         return content + ' |';
       }
-      
+
       return content;
     },
   });
@@ -185,19 +192,19 @@ export function removeWordPressShortcodes(html: string): string {
     'divider',
     'spacer',
   ];
-  
+
   // [shortcode] und [shortcode]...[/shortcode] entfernen
   let cleaned = html;
-  
+
   // Einfache Shortcodes
   shortcodes.forEach(code => {
     cleaned = cleaned.replace(new RegExp(`\\[${code}[^\\]]*\\]`, 'gi'), '');
     cleaned = cleaned.replace(new RegExp(`\\[${code}[^\\]]*\\].*?\\[\\/${code}\\]`, 'gis'), '');
   });
-  
+
   // Alle remaining Shortcodes mit Regex
   cleaned = cleaned.replace(WORDPRESS_SHORTCODE_PATTERN, '');
-  
+
   return cleaned;
 }
 
@@ -206,7 +213,7 @@ export function removeWordPressShortcodes(html: string): string {
  */
 export function cleanWordPressHTML(html: string): string {
   const $ = cheerio.load(html);
-  
+
   // WordPress Editor Kommentare entfernen
   $('*').contents().each(function() {
     if (this.type === 'comment') {
@@ -216,11 +223,11 @@ export function cleanWordPressHTML(html: string): string {
       }
     }
   });
-  
+
   // WordPress Klassen entfernen
   $('[class*="wp-"]').removeAttr('class');
   $('[id*="wp-"]').removeAttr('id');
-  
+
   // Auto-embed Links
   $('p').each(function() {
     const text = $(this).text();
@@ -231,13 +238,13 @@ export function cleanWordPressHTML(html: string): string {
       }
     }
   });
-  
+
   // Figure und Figcaption für Bilder
   $('figure').each(function() {
     const $figure = $(this);
     const $img = $figure.find('img');
     const $figcaption = $figure.find('figcaption');
-    
+
     if ($img.length > 0) {
       let content = $figure.html() || '';
       if ($figcaption.length > 0) {
@@ -247,7 +254,7 @@ export function cleanWordPressHTML(html: string): string {
       $figure.replaceWith(`<p>${content}</p>`);
     }
   });
-  
+
   return $.html();
 }
 
@@ -257,7 +264,7 @@ export function cleanWordPressHTML(html: string): string {
 export function extractYouTubeIds(html: string): string[] {
   const ids = new Set<string>();
   const $ = cheerio.load(html);
-  
+
   // iframes prüfen
   $('iframe').each(function() {
     const src = $(this).attr('src') || '';
@@ -266,7 +273,7 @@ export function extractYouTubeIds(html: string): string[] {
       if (match) ids.add(match[1]);
     }
   });
-  
+
   // Links prüfen
   $('a').each(function() {
     const href = $(this).attr('href') || '';
@@ -275,7 +282,7 @@ export function extractYouTubeIds(html: string): string[] {
       if (match) ids.add(match[1]);
     }
   });
-  
+
   // Text prüfen
   const text = $('body').text() || html;
   for (const pattern of YOUTUBE_PATTERNS) {
@@ -284,7 +291,7 @@ export function extractYouTubeIds(html: string): string[] {
       ids.add(match[1]);
     }
   }
-  
+
   return Array.from(ids);
 }
 
@@ -294,12 +301,12 @@ export function extractYouTubeIds(html: string): string[] {
 export function extractImageUrls(html: string): string[] {
   const urls = new Set<string>();
   const $ = cheerio.load(html);
-  
+
   $('img').each(function() {
     const src = $(this).attr('src');
     if (src) urls.add(src);
   });
-  
+
   return Array.from(urls);
 }
 
@@ -311,21 +318,26 @@ export function convertHTMLToMarkdown(
   options: Partial<ConversionOptions> = {}
 ): string {
   const opts = { ...DEFAULT_CONVERSION_OPTIONS, ...options };
-  
+
   let cleaned = html;
-  
+
   // WordPress-spezifischen Code entfernen
   if (opts.removeWordPressShortcodes) {
     cleaned = removeWordPressShortcodes(cleaned);
   }
-  
+
   // HTML bereinigen
   cleaned = cleanWordPressHTML(cleaned);
-  
+
   // Zu Markdown konvertieren
   const turndownService = createTurndownService(opts);
-  const markdown = turndownService.turndown(cleaned);
-  
+  let markdown = turndownService.turndown(cleaned);
+
+  // YouTube Links zu Iframes konvertieren
+  if (opts.convertYouTubeEmbeds) {
+    markdown = convertYouTubeLinksToIframes(markdown);
+  }
+
   // Cleanup: Leere Zeilen reduzieren
   return markdown
     .split('\n')
@@ -339,7 +351,7 @@ export function convertHTMLToMarkdown(
  */
 export function validateMarkdown(markdown: string): { valid: boolean; errors: string[] } {
   const errors: string[] = [];
-  
+
   // Auf fehlende Bild-Alt-Tags prüfen
   const altMatches = markdown.matchAll(/!\[([^\]]*)\]\(/g);
   for (const match of altMatches) {
@@ -347,7 +359,7 @@ export function validateMarkdown(markdown: string): { valid: boolean; errors: st
       errors.push('Bild ohne Alt-Text gefunden');
     }
   }
-  
+
   // Auf ungültige Links prüfen
   const linkMatches = markdown.matchAll(/\[([^\]]+)\]\(([^)]+)\)/g);
   for (const match of linkMatches) {
@@ -359,9 +371,28 @@ export function validateMarkdown(markdown: string): { valid: boolean; errors: st
       errors.push(`Ungültiger Link-URL: ${url || 'leer'}`);
     }
   }
-  
+
   return {
     valid: errors.length === 0,
     errors,
   };
+}
+
+/**
+ * Konvertiert YouTube-Links im Markdown zu Iframes
+ */
+export function convertYouTubeLinksToIframes(markdown: string): string {
+  // Markdown Links zu YouTube: [text](https://youtube.com/watch?v=xxx)
+  let converted = markdown.replace(
+    /\[([^\]]+)\]\((https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+))\)/g,
+    YOUTUBE_IFRAME_TEMPLATE('$3')
+  );
+
+  // Plain YouTube URLs im Text
+  converted = converted.replace(
+    /(?:^|\s)(https?:\/\/(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([a-zA-Z0-9_-]+))(?:\s|$)/g,
+    YOUTUBE_IFRAME_TEMPLATE('$2')
+  );
+
+  return converted;
 }
