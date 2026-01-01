@@ -69,6 +69,7 @@ export function WPImportPage() {
   const [isParsing, setIsParsing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   // Progress
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
@@ -93,6 +94,15 @@ export function WPImportPage() {
     const file = event.target.files?.[0];
     if (!file) return;
 
+    await processFile(file);
+
+    // Reset input value to allow same file to be uploaded again
+    if (event.target) {
+      event.target.value = '';
+    }
+  };
+
+  const processFile = async (file: File) => {
     if (!file.name.endsWith('.xml')) {
       toast({
         title: 'Fehler',
@@ -177,6 +187,26 @@ export function WPImportPage() {
     } finally {
       setIsParsing(false);
     }
+  };
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+
+    const file = e.dataTransfer.files?.[0];
+    if (!file) return;
+
+    await processFile(file);
   };
 
   const handleUploadMedia = async () => {
@@ -522,7 +552,14 @@ export function WPImportPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="border-2 border-dashed rounded-lg p-8 text-center">
+              <div
+                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
+                  isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' : 'border-muted-foreground/25'
+                }`}
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+              >
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -532,19 +569,21 @@ export function WPImportPage() {
                   className="hidden"
                   id="xml-upload"
                 />
-                <label htmlFor="xml-upload" className="cursor-pointer">
-                  <div className="flex flex-col items-center gap-2">
-                    <FolderOpen className="h-12 w-12 text-muted-foreground" />
-                    <div>
-                      <p className="font-medium">Klicken um Datei auszuwählen</p>
-                      <p className="text-sm text-muted-foreground">oder ziehen Sie die Datei hierher</p>
-                    </div>
-                    <Button variant="outline" disabled={isParsing || isUploading || isPublishing}>
-                      <Upload className="h-4 w-4 mr-2" />
-                      XML-Datei hochladen
-                    </Button>
+                <div className="flex flex-col items-center gap-2">
+                  <FolderOpen className={`h-12 w-12 ${isDragging ? 'text-blue-500' : 'text-muted-foreground'}`} />
+                  <div>
+                    <p className="font-medium">Klicken um Datei auszuwählen</p>
+                    <p className="text-sm text-muted-foreground">oder ziehen Sie die Datei hierher</p>
                   </div>
-                </label>
+                  <Button
+                    variant="outline"
+                    disabled={isParsing || isUploading || isPublishing}
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <Upload className="h-4 w-4 mr-2" />
+                    XML-Datei hochladen
+                  </Button>
+                </div>
               </div>
 
               {parsedData && (
