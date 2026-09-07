@@ -325,8 +325,120 @@ export function WPImportPage() {
   };
 
   // ==========================================================================
-  // Schritt 3: Medien herunterladen & zu Blossom hochladen
+  // Schritt 3: Medien herunterladen & zu Blossom hochladen (Pipeline)
+  // Wird manuell über den Button und automatisch beim Veröffentlichen genutzt
   // ==========================================================================
+
+  /**
+   * Sammelt noch nicht hochgeladene Bild-URLs (Inhalt + Titelbild)
+   * aus den ausgewählten Artikeln
+   */
+  const collectPendingMedia = (articlesMap: Map<string, ConvertedArticle>): Set<string> => {
+    const pending = new Set<string>();
+    articlesMap.forEach((article) => {
+      if (!article.selected) return;
+      const urls = extractImageUrlsFromArticle(article.post.content);
+      if (article.post.featuredImageUrl) urls.push(article.post.featuredImageUrl);
+      for (const url of urls) {
+        if (!article.mediaUrls.has(url)) pending.add(url);
+      }
+    });
+    return pending;
+  };
+
+  /**
+   * Media-Pipeline: sammeln → herunterladen → zu Blossom → URLs ersetzen.
+   * Gibt eine aktualisierte Article-Map zurück (State wird NICHT gesetzt).
+   */
+  const runMediaPipeline = async (
+    articlesMap: Map<string, ConvertedArticle>
+  ): Promise<{
+    articles: Map<string, ConvertedArticle>;
+    foundCount: number;
+    downloadedCount: number;
+    uploadedCount: number;
+  }> => {
+    const pendingUrls = collectPendingMedia(articlesMap);
+    const foundCount = pendingUrls.size;
+
+    if (foundCount === 0) {
+      return { articles: articlesMap, foundCount: 0, downloadedCount: 0, uploadedCount: 0 };
+    }
+
+    updateProgress({ message: `${foundCount} Medien gefunden`, percentage: 0 });
+
+    // Medien herunterladen (via CORS-Proxy-Fallback)
+    const downloadedMedias = await downloadMedias(
+      Array.from(pendingUrls),
+      (progress) => {
+        updateProgress({
+          message: `${progress.completed}/${progress.total} Medien heruntergeladen`,
+          percentage: Math.round((progress.completed / progress.total) * 50),
+        });
+      },
+      config.corsProxy
+    );
+
+    updateProgress({
+      status: 'completed',
+      message: `${downloadedMedias.length}/${foundCount} Medien heruntergeladen`,
+    });
+
+    if (downloadedMedias.length === 0) {
+      return { articles: articlesMap, foundCount, downloadedCount: 0, uploadedCount: 0 };
+    }
+
+    // Zu Blossom hochladen (relay.mojobus.co + primal Backup)
+    addProgressStep('Medien zu Blossom hochladen', 'in-progress');
+
+    const uploadResults = await uploadFiles(
+      downloadedMedias.map(m => m.file),
+      {
+        servers: config.blossomServers,
+        maxRetries: 3,
+        timeout: 120000,
+      },
+      (progress: UploadProgress) => {
+        updateProgress({
+          message: `${progress.completed}/${progress.total} Medien hochgeladen`,
+          percentage: 50 + Math.round((progress.completed / progress.total) * 50),
+        });
+        setTotalProgress(progress.percentage);
+      },
+      user?.signer
+    );
+
+    // URL-Map erstellen (Original URL -> Blossom URL)
+    const urlMap = new Map<string, string>();
+    uploadResults.forEach((result, index) => {
+      urlMap.set(downloadedMedias[index].originalUrl, result.url);
+    });
+
+    // URLs in Markdown ersetzen + Titelbilder mappen
+    addProgressStep('URLs ersetzen', 'in-progress');
+    const updatedArticles = new Map<string, ConvertedArticle>();
+
+    articlesMap.forEach((article, postId) => {
+      if (article.selected) {
+        // Bisherige Merges beibehalten + neue hinzufügen
+        const mergedMap = new Map<string, string>([...article.mediaUrls, ...urlMap]);
+        const updatedMarkdown = replaceUrlsInMarkdown(article.markdown, urlMap);
+        const featuredBlossom = article.post.featuredImageUrl
+          ? mergedMap.get(article.post.featuredImageUrl)
+          : undefined;
+        updatedArticles.set(postId, {
+          ...article,
+          markdown: updatedMarkdown,
+          featuredBlossomUrl: featuredBlossom,
+          mediaUrls: mergedMap,
+        });
+      } else {
+        updatedArticles.set(postId, article);
+      }
+    });
+
+    return { articles: updatedArticles, foundCount, downloadedCount: downloadedMedias.length, uploadedCount: uploadResults.length };
+  };
 
   const handleUploadMedia = async () => {
     if (!user || !user.signer) {
@@ -352,119 +464,35 @@ export function WPImportPage() {
     addProgressStep('Medien herunterladen', 'in-progress');
 
     try {
-      const articles = new Map(convertedArticles);
-      const allImageUrls = new Set<string>();
-      let totalFiles = 0;
+      const result = await runMediaPipeline(convertedArticles);
 
-      // Alle Bild-URLs (inkl. Titelbilder) aus ausgewählten Artikeln sammeln
-      articles.forEach((article) => {
-        if (article.selected) {
-          const imageUrls = extractImageUrlsFromArticle(article.post.content);
-          imageUrls.forEach(url => allImageUrls.add(url));
-          if (article.post.featuredImageUrl) {
-            allImageUrls.add(article.post.featuredImageUrl);
-          }
-          totalFiles += imageUrls.length + (article.post.featuredImageUrl ? 1 : 0);
-        }
-      });
-
-      if (allImageUrls.size === 0) {
+      if (result.foundCount === 0) {
         updateProgress({ status: 'completed', message: 'Keine Medien zum Hochladen' });
-        setIsUploading(false);
-        toast({ title: 'Keine Medien', description: 'Die ausgewählten Artikel enthalten keine Bilder.' });
+        toast({ title: 'Keine Medien', description: 'Die ausgewählten Artikel enthalten keine neuen Bilder.' });
         return;
       }
 
-      updateProgress({
-        message: `${allImageUrls.size} Medien gefunden`,
-        percentage: 0,
-      });
+      setConvertedArticles(result.articles);
 
-      // Medien herunterladen (via CORS-Proxy-Fallback)
-      const downloadedMedias = await downloadMedias(
-        Array.from(allImageUrls),
-        (progress) => {
-          updateProgress({
-            message: `${progress.completed}/${progress.total} Medien heruntergeladen`,
-            percentage: Math.round((progress.completed / progress.total) * 50),
-          });
-        },
-        config.corsProxy
-      );
-
-      if (downloadedMedias.length === 0) {
-        updateProgress({ status: 'completed', message: 'Keine Medien konnten heruntergeladen werden' });
-        setIsUploading(false);
+      if (result.uploadedCount === 0) {
+        updateProgress({ status: 'failed', message: 'Keine Medien konnten heruntergeladen werden' });
         toast({
           title: 'Keine Medien',
           description: 'Keine Medien konnten heruntergeladen werden',
+          variant: 'destructive',
         });
         return;
       }
 
       updateProgress({
         status: 'completed',
-        message: `${downloadedMedias.length}/${allImageUrls.size} Medien heruntergeladen`,
-      });
-
-      // Zu Blossom hochladen (relay.mojobus.co + primal Backup)
-      addProgressStep('Medien zu Blossom hochladen', 'in-progress');
-
-      const uploadResults = await uploadFiles(
-        downloadedMedias.map(m => m.file),
-        {
-          servers: config.blossomServers,
-          maxRetries: 3,
-          timeout: 120000,
-        },
-        (progress: UploadProgress) => {
-          updateProgress({
-            message: `${progress.completed}/${progress.total} Medien hochgeladen`,
-            percentage: 50 + Math.round((progress.completed / progress.total) * 50),
-          });
-          setTotalProgress(progress.percentage);
-        },
-        user.signer
-      );
-
-      // URL-Map erstellen (Original URL -> Blossom URL)
-      const urlMap = new Map<string, string>();
-      uploadResults.forEach((result, index) => {
-        urlMap.set(downloadedMedias[index].originalUrl, result.url);
-      });
-
-      // URLs in Markdown ersetzen + Titelbilder mappen
-      addProgressStep('URLs ersetzen', 'in-progress');
-      const updatedArticles = new Map<string, ConvertedArticle>();
-
-      articles.forEach((article, postId) => {
-        if (article.selected) {
-          const updatedMarkdown = replaceUrlsInMarkdown(article.markdown, urlMap);
-          const featuredBlossom = article.post.featuredImageUrl
-            ? urlMap.get(article.post.featuredImageUrl)
-            : undefined;
-          updatedArticles.set(postId, {
-            ...article,
-            markdown: updatedMarkdown,
-            featuredBlossomUrl: featuredBlossom,
-            mediaUrls: urlMap,
-          });
-        } else {
-          updatedArticles.set(postId, article);
-        }
-      });
-
-      setConvertedArticles(updatedArticles);
-
-      updateProgress({
-        status: 'completed',
-        message: `${uploadResults.length} Medien erfolgreich zu Blossom hochgeladen`,
+        message: `${result.uploadedCount} Medien erfolgreich zu Blossom hochgeladen`,
       });
       setTotalProgress(100);
 
       toast({
         title: 'Upload abgeschlossen',
-        description: `${uploadResults.length} Medien erfolgreich hochgeladen`,
+        description: `${result.uploadedCount} Medien erfolgreich hochgeladen`,
       });
     } catch (error) {
       console.error('Fehler beim Hochladen:', error);
@@ -502,35 +530,11 @@ export function WPImportPage() {
       return;
     }
 
-    // Ausgewählte Artikel sammeln (bereits importierte überspringen)
-    const selectedArticles = Array.from(convertedArticles.values())
-      .filter(a => a.selected && !(config.skipImported && a.alreadyImported && !config.dryRun))
-      .map((a) => {
-        const tags = buildArticleTags({
-          targetCategoryId: a.targetCategoryId,
-          extraTags: a.extraTags,
-          globalTags: config.globalTags,
-          wpCategories: a.post.categories,
-          wpTags: a.post.tags,
-          preserveCategories: config.preserveCategories,
-          preserveTags: config.preserveTags,
-        });
+    // Vorauswahl zählen (für Bestätigungsdialog)
+    const pendingSelection = Array.from(convertedArticles.values())
+      .filter(a => a.selected && !(config.skipImported && a.alreadyImported && !config.dryRun));
 
-        return {
-          title: a.post.title,
-          content: a.markdown,
-          summary: a.post.excerpt,
-          image: a.featuredBlossomUrl || a.post.featuredImageUrl,
-          targetCategoryId: a.targetCategoryId,
-          dTag: a.dTag,
-          slug: a.post.slug,
-          url: a.post.link,
-          publishedAt: Math.floor(a.post.publishDate.getTime() / 1000),
-          tags,
-        };
-      });
-
-    if (selectedArticles.length === 0) {
+    if (pendingSelection.length === 0) {
       toast({
         title: 'Keine Artikel ausgewählt',
         description: 'Bitte wählen Sie mindestens einen Artikel aus',
@@ -541,7 +545,7 @@ export function WPImportPage() {
 
     if (config.requireConfirmation && !config.dryRun) {
       const confirmed = confirm(
-        `${selectedArticles.length} Artikel werden als ${MOJOBUS_AUTHORS[user.pubkey] || user.pubkey.slice(0, 8)} veröffentlicht. Fortfahren?`
+        `${pendingSelection.length} Artikel werden als ${MOJOBUS_AUTHORS[user.pubkey] || user.pubkey.slice(0, 8)} veröffentlicht.\n\nBilder werden automatisch zu Blossom hochgeladen. Fortfahren?`
       );
       if (!confirmed) return;
     }
@@ -550,7 +554,87 @@ export function WPImportPage() {
     resetProgress();
     addProgressStep(config.dryRun ? 'Dry-Run: Events erzeugen' : 'Artikel veröffentlichen', 'in-progress');
 
+    let currentArticles = convertedArticles;
+
     try {
+      // Automatischer Media-Upload vor dem Veröffentlichen
+      // (nicht im Dry-Run — dort wird nichts gesendet/hochgeladen)
+      if (config.uploadMedia && !config.dryRun) {
+        const pendingMediaCount = collectPendingMedia(currentArticles).size;
+        if (pendingMediaCount > 0) {
+          addProgressStep(`Medien automatisch hochladen (${pendingMediaCount})`, 'in-progress');
+          try {
+            const mediaResult = await runMediaPipeline(currentArticles);
+            if (mediaResult.uploadedCount > 0) {
+              currentArticles = mediaResult.articles;
+              setConvertedArticles(currentArticles);
+              updateProgress({
+                status: 'completed',
+                message: `${mediaResult.uploadedCount}/${mediaResult.foundCount} Medien automatisch hochgeladen`,
+              });
+            } else {
+              updateProgress({
+                status: 'completed',
+                message: 'Media-Upload fehlgeschlagen — Artikel verwenden Original-URLs',
+              });
+              toast({
+                title: 'Media-Upload fehlgeschlagen',
+                description: 'Artikel werden mit den Original-Bild-URLs von mojobus.org veröffentlicht.',
+                variant: 'destructive',
+              });
+            }
+          } catch (mediaError) {
+            console.error('Automatischer Media-Upload fehlgeschlagen:', mediaError);
+            updateProgress({
+              status: 'completed',
+              message: 'Media-Upload fehlgeschlagen — Artikel verwenden Original-URLs',
+            });
+            toast({
+              title: 'Media-Upload fehlgeschlagen',
+              description: 'Artikel werden mit den Original-Bild-URLs von mojobus.org veröffentlicht.',
+              variant: 'destructive',
+            });
+          }
+        }
+      }
+
+      // Ausgewählte Artikel sammeln (mit ggf. aktualisierten Bild-URLs)
+      const selectedArticles = Array.from(currentArticles.values())
+        .filter(a => a.selected && !(config.skipImported && a.alreadyImported && !config.dryRun))
+        .map((a) => {
+          const tags = buildArticleTags({
+            targetCategoryId: a.targetCategoryId,
+            extraTags: a.extraTags,
+            globalTags: config.globalTags,
+            wpCategories: a.post.categories,
+            wpTags: a.post.tags,
+            preserveCategories: config.preserveCategories,
+            preserveTags: config.preserveTags,
+          });
+
+          return {
+            title: a.post.title,
+            content: a.markdown,
+            summary: a.post.excerpt,
+            image: a.featuredBlossomUrl || a.post.featuredImageUrl,
+            targetCategoryId: a.targetCategoryId,
+            dTag: a.dTag,
+            slug: a.post.slug,
+            url: a.post.link,
+            publishedAt: Math.floor(a.post.publishDate.getTime() / 1000),
+            tags,
+          };
+        });
+
+      if (selectedArticles.length === 0) {
+        toast({
+          title: 'Keine Artikel ausgewählt',
+          description: 'Bitte wählen Sie mindestens einen Artikel aus',
+          variant: 'destructive',
+        });
+        return;
+      }
+
       const sign = async (event: Parameters<typeof user.signer.signEvent>[0]) => {
         return user.signer.signEvent(event);
       };
@@ -593,7 +677,7 @@ export function WPImportPage() {
           const article = selectedArticles.find(a => a.dTag === result.articleId)
             ?? selectedArticles.find(a => result.event.tags.find(([n, v]) => n === 'd' && v === a.dTag));
           if (article) {
-            const post = Array.from(convertedArticles.values()).find(p => p.dTag === article.dTag);
+            const post = Array.from(currentArticles.values()).find(p => p.dTag === article.dTag);
             markImported({
               wpPostId: post?.post.postId || article.dTag,
               wpTitle: article.title,
@@ -934,6 +1018,7 @@ export function WPImportPage() {
                   onClick={handleUploadMedia}
                   disabled={isUploading || isPublishing || !config.uploadMedia || articlesList.length === 0}
                   variant="outline"
+                  title="Optional – passiert automatisch beim Veröffentlichen"
                 >
                   <ImageIcon className="h-4 w-4 mr-2" />
                   Medien hochladen
@@ -960,15 +1045,22 @@ export function WPImportPage() {
               </div>
 
               {articlesList.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap text-sm">
-                  <Badge variant="default">{selectedCount} ausgewählt</Badge>
-                  <Badge variant="secondary">{articlesList.length} geladen</Badge>
-                  {importedCount > 0 && (
-                    <Badge variant="outline">{importedCount} bereits importiert (übersprungen)</Badge>
-                  )}
-                  {config.dryRun && (
-                    <Badge variant="outline" className="text-blue-600 border-blue-400">Dry-Run: es wird nichts gesendet</Badge>
-                  )}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 flex-wrap text-sm">
+                    <Badge variant="default">{selectedCount} ausgewählt</Badge>
+                    <Badge variant="secondary">{articlesList.length} geladen</Badge>
+                    {importedCount > 0 && (
+                      <Badge variant="outline">{importedCount} bereits importiert (übersprungen)</Badge>
+                    )}
+                    {config.dryRun && (
+                      <Badge variant="outline" className="text-blue-600 border-blue-400">Dry-Run: es wird nichts gesendet</Badge>
+                    )}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {config.uploadMedia
+                      ? '📷 Bilder und Titelbilder werden beim Veröffentlichen automatisch heruntergeladen und zu Blossom (relay.mojobus.co + Backup) hochgeladen. Im Dry-Run: keine Uploads.'
+                      : '📷 Media-Upload ist deaktiviert (Einstellungen) – Artikel behalten die Original-Bild-URLs von mojobus.org.'}
+                  </p>
                 </div>
               )}
 
