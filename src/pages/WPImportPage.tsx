@@ -1026,8 +1026,8 @@ export function WPImportPage() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="max-h-96">
-                  <div className="space-y-2 pr-4">
+                <div className="max-h-96 overflow-y-auto pr-2">
+                  <div className="space-y-2">
                     {publishResults.map((result, i) => (
                       <div key={i} className="flex items-center justify-between gap-3 text-sm py-1.5 border-b last:border-0">
                         <span className="flex-1 truncate">{result.title}</span>
@@ -1052,7 +1052,7 @@ export function WPImportPage() {
                       </div>
                     ))}
                   </div>
-                </ScrollArea>
+                </div>
               </CardContent>
             </Card>
           )}

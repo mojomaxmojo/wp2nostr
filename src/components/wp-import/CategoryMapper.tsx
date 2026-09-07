@@ -9,7 +9,6 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
@@ -80,8 +79,8 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <ScrollArea className="max-h-[28rem]">
-          <div className="space-y-3 pr-4">
+        <div className="max-h-[28rem] overflow-y-auto pr-2">
+          <div className="space-y-3">
             {categories.map((category) => {
               const mapping = mappings[String(category.id)];
               if (!mapping) return null;
@@ -183,7 +182,7 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
               );
             })}
           </div>
-        </ScrollArea>
+        </div>
       </CardContent>
     </Card>
   );
