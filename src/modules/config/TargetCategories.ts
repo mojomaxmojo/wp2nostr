@@ -11,6 +11,20 @@
 
 export type TargetCategoryId = 'articles' | 'rvlife' | 'leon' | 'places';
 
+/**
+ * Unterkategorie (mojobus.co ARTICLE_CATEGORIES-Untermenü, 1:1)
+ * id = die category-ID die mojobus.co als ['category', id]-Tag setzt
+ */
+export interface TargetSubcategory {
+  id: string;
+  name: string;
+  emoji: string;
+  /** Diese t-Tags werden bei Auswahl immer gesetzt (autoTags) */
+  autoTags: string[];
+  /** Verfügbare optionale t-Tags */
+  optionalTags: string[];
+}
+
 export interface TargetCategory {
   id: TargetCategoryId;
   name: string;
@@ -25,7 +39,122 @@ export interface TargetCategory {
   requiredTags: string[];
   /** Verfügbare optionale t-Tags */
   optionalTags: string[];
+  /** mojobus.co-Untermenü (ARTICLE_CATEGORIES / RV Life / Strand-Ort) */
+  subcategories: TargetSubcategory[];
 }
+
+// Unterkategorien 1:1 aus mojobusco/src/config/articles.ts, rvlife.ts, strandort.ts
+const ARTICLE_SUBCATEGORIES: TargetSubcategory[] = [
+  {
+    id: 'vanlife',
+    name: 'Vanlife',
+    emoji: '🚐',
+    autoTags: ['vanlife'],
+    optionalTags: ['camping', 'wildcamping', 'stellplatz', 'reise'],
+  },
+  {
+    id: 'reisen',
+    name: 'Reisen',
+    emoji: '🗺️',
+    autoTags: ['reisen'],
+    optionalTags: ['route', 'grenze', 'europa', 'abenteuer'],
+  },
+  {
+    id: 'leben',
+    name: 'Lifestyle',
+    emoji: '🌊',
+    autoTags: ['leben'],
+    optionalTags: ['lifestyle', 'minimalismus', 'freedom', 'community'],
+  },
+  {
+    id: 'erfahrung',
+    name: 'Erfahrungsberichte',
+    emoji: '💭',
+    autoTags: ['erfahrung'],
+    optionalTags: ['story', 'erlebnis', 'lernen', 'tipp'],
+  },
+  {
+    id: 'diy',
+    name: 'DIY & Anleitungen',
+    emoji: '🛠️',
+    autoTags: ['diy', 'anleitung'],
+    optionalTags: ['tutorial', 'guide', 'selbermachen'],
+  },
+  {
+    id: 'technik',
+    name: 'Technik & Solar',
+    emoji: '⚡',
+    autoTags: ['technik', 'solar'],
+    optionalTags: ['elektronik', 'strom', 'photovoltaik'],
+  },
+  // Strand/Ort-Gruppe (mojobusco/src/config/strandort.ts)
+  {
+    id: 'strandort-strand',
+    name: 'Strand/Ort: Strand',
+    emoji: '🏖️',
+    autoTags: ['strand'],
+    optionalTags: [],
+  },
+  {
+    id: 'strandort-berg',
+    name: 'Strand/Ort: Berg',
+    emoji: '⛰️',
+    autoTags: ['berg'],
+    optionalTags: [],
+  },
+  {
+    id: 'strandort-wald',
+    name: 'Strand/Ort: Wald',
+    emoji: '🌲',
+    autoTags: ['wald'],
+    optionalTags: [],
+  },
+  {
+    id: 'strandort-meer',
+    name: 'Strand/Ort: Meer',
+    emoji: '🌊',
+    autoTags: ['meer'],
+    optionalTags: [],
+  },
+  {
+    id: 'strandort-ort',
+    name: 'Strand/Ort: Ort',
+    emoji: '📍',
+    autoTags: ['ort'],
+    optionalTags: [],
+  },
+];
+
+const RVLIFE_SUBCATEGORIES: TargetSubcategory[] = [
+  {
+    id: 'rvlife-kueche-essen',
+    name: 'Küche & Essen',
+    emoji: '🍳',
+    autoTags: ['rv-life', 'wohnmobil', 'rvlife', 'camper', 'kueche-essen', 'kochen'],
+    optionalTags: ['backen', 'rezepte', 'kochgeraete', 'kuechenausstattung'],
+  },
+  {
+    id: 'rvlife-ausstattung',
+    name: 'Ausstattung',
+    emoji: '🏠',
+    autoTags: ['rv-life', 'wohnmobil', 'rvlife', 'camper', 'ausstattung'],
+    optionalTags: ['kuechenausstattung', 'badausstattung', 'storage', 'stauraum'],
+  },
+  {
+    id: 'rvlife-freeliving',
+    name: 'Freeliving',
+    emoji: '🕊️',
+    autoTags: ['rv-life', 'wohnmobil', 'rvlife', 'camper', 'freeliving', 'nomad'],
+    optionalTags: ['digital-nomad', 'freedom', 'minimalismus', 'community'],
+  },
+  {
+    id: 'rvlife-lifestyle',
+    name: 'Lifestyle',
+    emoji: '✨',
+    autoTags: ['rv-life', 'wohnmobil', 'rvlife', 'camper', 'lifestyle', 'wellness'],
+    optionalTags: ['mode', 'fashion', 'gesundheit', 'fitness', 'yoga', 'meditation'],
+  },
+];
 
 export const TARGET_CATEGORIES: TargetCategory[] = [
   {
@@ -49,6 +178,7 @@ export const TARGET_CATEGORIES: TargetCategory[] = [
       // Vanlife
       'ausbau', 'camping', 'wildcamping', 'digital', 'nomade',
     ],
+    subcategories: ARTICLE_SUBCATEGORIES,
   },
   {
     id: 'rvlife',
@@ -70,6 +200,7 @@ export const TARGET_CATEGORIES: TargetCategory[] = [
       // Freeliving
       'freeliving', 'nomad', 'freedom', 'nomadenleben', 'digital-nomad', 'ortsunabhaengig', 'minimalismus',
     ],
+    subcategories: RVLIFE_SUBCATEGORIES,
   },
   {
     id: 'leon',
@@ -82,6 +213,7 @@ export const TARGET_CATEGORIES: TargetCategory[] = [
     typeTag: 'article',
     requiredTags: ['leon', 'artikel', 'article', 'hund', 'dog', 'lion', 'dogo', 'mojobus'],
     optionalTags: ['vanlife', 'technik', 'reisen', 'leben', 'anleitung', 'erfahrung'],
+    subcategories: [],
   },
   {
     id: 'places',
@@ -105,6 +237,7 @@ export const TARGET_CATEGORIES: TargetCategory[] = [
       // Geeignet für
       'familien', 'paare', 'single', 'wohnmobil', 'zelt',
     ],
+    subcategories: [],
   },
 ];
 
@@ -114,4 +247,21 @@ export function getTargetCategory(id: string): TargetCategory | undefined {
 
 export function getTargetCategoryName(id: string): string {
   return getTargetCategory(id)?.name || id;
+}
+
+/**
+ * Findet eine Unterkategorie über alle Hauptkategorien hinweg
+ * (IDs sind global eindeutig, z.B. 'rvlife-kueche-essen', 'strandort-strand')
+ */
+export function getSubcategoryById(id: string): TargetSubcategory | undefined {
+  for (const category of TARGET_CATEGORIES) {
+    const sub = category.subcategories.find(s => s.id === id);
+    if (sub) return sub;
+  }
+  return undefined;
+}
+
+export function getSubcategoryName(id?: string): string {
+  if (!id) return '';
+  return getSubcategoryById(id)?.name || id;
 }

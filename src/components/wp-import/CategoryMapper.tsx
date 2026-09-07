@@ -85,6 +85,12 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
               const mapping = mappings[String(category.id)];
               if (!mapping) return null;
               const target = getTargetCategory(mapping.targetId);
+              const sub = mapping.subcategoryId
+                ? target?.subcategories.find(s => s.id === mapping.subcategoryId)
+                : undefined;
+              const subcategoryId = sub?.id;
+              // Optional-Tags: Unterkategorie bevorzugt, sonst Hauptkategorie
+              const optionalTagSource = sub ? sub.optionalTags : (target?.optionalTags || []);
 
               return (
                 <div
@@ -110,7 +116,15 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
                   <div className="flex items-center gap-3 flex-wrap ml-9">
                     <Select
                       value={mapping.targetId}
-                      onValueChange={(value) => updateMapping(String(category.id), { targetId: value })}
+                      onValueChange={(value) => {
+                        // Unterkategorie verwerfen, wenn sie zur neuen Hauptkategorie nicht passt
+                        const newTarget = getTargetCategory(value);
+                        const subStillValid = newTarget?.subcategories.some(s => s.id === mapping.subcategoryId);
+                        updateMapping(String(category.id), {
+                          targetId: value,
+                          subcategoryId: subStillValid ? mapping.subcategoryId : undefined,
+                        });
+                      }}
                       disabled={!mapping.enabled}
                     >
                       <SelectTrigger className="w-56">
@@ -124,6 +138,26 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
                         ))}
                       </SelectContent>
                     </Select>
+
+                    {target && target.subcategories.length > 0 && (
+                      <Select
+                        value={mapping.subcategoryId || 'none'}
+                        onValueChange={(value) => updateMapping(String(category.id), { subcategoryId: value === 'none' ? undefined : value })}
+                        disabled={!mapping.enabled}
+                      >
+                        <SelectTrigger className="w-56">
+                          <SelectValue placeholder="Unterkategorie" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">— keine Unterkategorie —</SelectItem>
+                          {target.subcategories.map((sub) => (
+                            <SelectItem key={sub.id} value={sub.id}>
+                              {sub.emoji} {sub.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    )}
 
                     <Button
                       variant="ghost"
@@ -147,6 +181,12 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
                           #{tag}
                         </Badge>
                       ))}
+                      {/* Auto-Tags der Unterkategorie (immer gesetzt) */}
+                      {subcategoryId && sub && sub.autoTags.map(tag => (
+                        <Badge key={tag} variant="default" className="text-xs opacity-80" title="Automatisch durch Unterkategorie">
+                          #{tag} ✓
+                        </Badge>
+                      ))}
                       {mapping.extraTags.map(tag => (
                         <button
                           key={tag}
@@ -160,8 +200,8 @@ export function CategoryMapper({ categories, mappings, onChange, onResetMapping 
                           </Badge>
                         </button>
                       ))}
-                      {/* Verfügbare optionale Tags zum Hinzufügen */}
-                      {mapping.enabled && target.optionalTags
+                      {/* Verfügbare optionale Tags zum Hinzufügen (Unterkategorie bevorzugt) */}
+                      {mapping.enabled && optionalTagSource
                         .filter(tag => !mapping.extraTags.includes(tag))
                         .slice(0, 12)
                         .map(tag => (

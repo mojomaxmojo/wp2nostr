@@ -14,6 +14,7 @@ export interface ImportedArticle {
   naddr?: string;
   slug?: string;
   targetCategoryId: string;
+  subcategoryId?: string;
   publishedAt: number; // Unix-Sekunden (Original-Datum)
   importedAt: number; // Unix-Millisekunden
   dryRun: boolean;

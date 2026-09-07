@@ -31,6 +31,8 @@ export interface CategoryMapping {
   wpCategorySlug: string;
   /** ID der mojobus.co-Zielkategorie */
   targetId: string;
+  /** mojobus.co-Unterkategorie (ARTICLE_CATEGORIES-ID, optional) */
+  subcategoryId?: string;
   /** Zusätzliche optionale t-Tags */
   extraTags: string[];
   /** Kategorie beim Import berücksichtigen? */

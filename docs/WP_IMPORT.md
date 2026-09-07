@@ -58,6 +58,16 @@ content:      Markdown (ReactMarkdown + GFM auf mojobus.co)
 | leon | /artikel/leon | leon, artikel, article, hund, dog, lion, dogo, mojobus |
 | places | /plaetze | location, places, mojobus (+ type=place) |
 
+### Unterkategorien (aus mojobus.co `articles.ts`, `rvlife.ts`, `strandort.ts`)
+Bei Auswahl wird zusätzlich `['category', <id>]` gesetzt und die autoTags der
+Unterkategorie werden als t-Tags übernommen (identisch zum mojobus.co-Formular):
+
+- **articles:** vanlife 🚐, reisen 🗺️, leben 🌊, erfahrung 💭, diy 🛠️, technik ⚡,
+  strandort-strand 🏖️, strandort-berg ⛰️, strandort-wald 🌲, strandort-meer 🌊, strandort-ort 📍
+- **rvlife:** rvlife-kueche-essen 🍳, rvlife-ausstattung 🏠, rvlife-freeliving 🕊️, rvlife-lifestyle ✨
+  (autoTags: rv-life, wohnmobil, rvlife, camper + Untertag)
+- **leon / places:** keine Unterkategorien
+
 ## Infrastruktur
 - **Publish-Relays:** wss://relay.mojobus.co, wss://relay.primal.net, wss://nos.lol
 - **Blossom:** https://relay.mojobus.co (Haupt, nur mojo/susanne) + https://blossom.primal.net (Backup, immer zusätzlich)

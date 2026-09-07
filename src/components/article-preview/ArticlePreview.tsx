@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { Calendar, Tag, Eye, CheckCircle2, XCircle, Target, History } from 'lucide-react';
 import type { WordPressPost } from '@/modules/parser/WordPressParser';
-import { getTargetCategoryName } from '@/modules/config/TargetCategories';
+import { getTargetCategoryName, getSubcategoryName } from '@/modules/config/TargetCategories';
 import { formatDistanceToNow } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -21,6 +21,8 @@ export interface ArticlePreviewProps {
   onValidate?: (postId: string, valid: boolean) => void;
   /** mojobus.co-Zielkategorie (wird als Badge angezeigt) */
   targetCategoryId?: string;
+  /** mojobus.co-Unterkategorie (wird als Badge angezeigt) */
+  targetSubcategoryId?: string;
   /** Zusätzliche t-Tags die gesetzt werden */
   extraTags?: string[];
   /** Artikel wurde bereits importiert */
@@ -29,7 +31,7 @@ export interface ArticlePreviewProps {
   featuredImageUrl?: string;
 }
 
-export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, extraTags, alreadyImported, featuredImageUrl }: ArticlePreviewProps) {
+export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, targetSubcategoryId, extraTags, alreadyImported, featuredImageUrl }: ArticlePreviewProps) {
   // Markdown für Vorschau vereinfacht rendern
   const renderMarkdownPreview = (markdown: string) => {
     let html = markdown;
@@ -111,6 +113,7 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
             <Badge className="text-xs" title="mojobus.co-Zielkategorie">
               <Target className="h-3 w-3 mr-1" />
               {getTargetCategoryName(targetCategoryId)}
+              {targetSubcategoryId && ` → ${getSubcategoryName(targetSubcategoryId)}`}
             </Badge>
           )}
           {alreadyImported && (

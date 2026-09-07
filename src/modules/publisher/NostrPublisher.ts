@@ -6,7 +6,7 @@
 
 import type { NostrEvent } from '@nostrify/nostrify';
 import { nip19 } from 'nostr-tools';
-import { getTargetCategory, type TargetCategory } from '@/modules/config/TargetCategories';
+import { getTargetCategory, getSubcategoryById, type TargetCategory } from '@/modules/config/TargetCategories';
 
 export interface NostrRelay {
   url: string;
@@ -22,6 +22,8 @@ export interface ArticleData {
   image?: string;
   /** mojobus.co-Zielkategorie (bestimmt type-Tag + Pflicht-t-Tags) */
   targetCategoryId?: string;
+  /** mojobus.co-Unterkategorie (ARTICLE_CATEGORIES-ID, z.B. 'rvlife-kueche-essen') */
+  subcategoryId?: string;
   /** Stabiler d-Tag, z.B. article-{wpId}-{slug} — ersetzt Duplikate statt neue zu erstellen */
   dTag?: string;
   /** WordPress-Slug für den slug-Tag */
@@ -114,6 +116,15 @@ export function createArticleEvent(
     ['published_at', publishedAt.toString()],
     ['client', 'wp2nostr'],
   ];
+
+  // Unterkategorie (mojobus.co-Untermenü): category-Tag + autoTags als t-Tags
+  if (data.subcategoryId) {
+    const sub = getSubcategoryById(data.subcategoryId);
+    if (sub) {
+      tags.push(['category', sub.id]);
+      sub.autoTags.forEach(t => tags.push(['t', t]));
+    }
+  }
 
   if (data.summary) {
     tags.push(['summary', data.summary]);

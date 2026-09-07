@@ -82,6 +82,7 @@ interface ConvertedArticle {
   mediaUrls: Map<string, string>; // Original URL -> Blossom URL
   featuredBlossomUrl?: string; // Titelbild → Blossom URL
   targetCategoryId: string;
+  subcategoryId?: string; // mojobus.co-Unterkategorie
   extraTags: string[];
   dTag: string;
   alreadyImported: boolean;
@@ -282,6 +283,7 @@ export function WPImportPage() {
             selected: !(config.skipImported && alreadyImported),
             mediaUrls: new Map(),
             targetCategoryId: resolved.targetId,
+            subcategoryId: resolved.subcategoryId,
             extraTags: resolved.extraTags,
             dTag: buildDTag(post.postId, post.slug),
             alreadyImported,
@@ -618,6 +620,7 @@ export function WPImportPage() {
             summary: a.post.excerpt,
             image: a.featuredBlossomUrl || a.post.featuredImageUrl,
             targetCategoryId: a.targetCategoryId,
+            subcategoryId: a.subcategoryId,
             dTag: a.dTag,
             slug: a.post.slug,
             url: a.post.link,
@@ -686,6 +689,7 @@ export function WPImportPage() {
               naddr: result.naddr,
               slug: article.slug,
               targetCategoryId: article.targetCategoryId,
+              subcategoryId: article.subcategoryId,
               publishedAt: article.publishedAt,
               importedAt: Date.now(),
               dryRun: false,
@@ -1199,6 +1203,7 @@ export function WPImportPage() {
                         selected={article.selected}
                         onToggle={toggleArticle}
                         targetCategoryId={article.targetCategoryId}
+                        targetSubcategoryId={article.subcategoryId}
                         extraTags={article.extraTags}
                         alreadyImported={article.alreadyImported}
                         featuredImageUrl={article.featuredBlossomUrl || article.post.featuredImageUrl}
