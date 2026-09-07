@@ -4,7 +4,6 @@
  */
 
 import TurndownService from 'turndown';
-import * as cheerio from 'cheerio';
 
 export interface ConversionOptions {
   removeWordPressShortcodes: boolean;
@@ -210,52 +209,59 @@ export function removeWordPressShortcodes(html: string): string {
 
 /**
  * Bereinigt HTML von WordPress-spezifischem Code
+ * (native DOMParser-Implementierung, ersetzt cheerio)
  */
 export function cleanWordPressHTML(html: string): string {
-  const $ = cheerio.load(html);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const body = doc.body;
 
   // WordPress Editor Kommentare entfernen
-  $('*').contents().each(function() {
-    if (this.type === 'comment') {
-      const comment = (this as any).data || '';
-      if (comment.includes('wp:') || comment.includes('WordPress')) {
-        $(this).remove();
-      }
+  const walker = doc.createTreeWalker(body, NodeFilter.SHOW_COMMENT);
+  const commentsToRemove: Comment[] = [];
+  while (walker.nextNode()) {
+    const comment = walker.currentNode as Comment;
+    const data = comment.data || '';
+    if (data.includes('wp:') || data.includes('WordPress')) {
+      commentsToRemove.push(comment);
     }
-  });
+  }
+  commentsToRemove.forEach(comment => comment.remove());
 
   // WordPress Klassen entfernen
-  $('[class*="wp-"]').removeAttr('class');
-  $('[id*="wp-"]').removeAttr('id');
+  body.querySelectorAll('[class*="wp-"]').forEach(el => el.removeAttribute('class'));
+  body.querySelectorAll('[id*="wp-"]').forEach(el => el.removeAttribute('id'));
 
   // Auto-embed Links
-  $('p').each(function() {
-    const text = $(this).text();
-    if (text.startsWith('http')) {
-      const $link = $(this).find('a').first();
-      if ($link.length === 0 && YOUTUBE_PATTERNS.some(pattern => pattern.test(text))) {
-        $(this).replaceWith(`<p><a href="${text}">${text}</a></p>`);
+  body.querySelectorAll('p').forEach(p => {
+    const text = (p.textContent || '').trim();
+    if (text.startsWith('http') && !p.querySelector('a')) {
+      if (YOUTUBE_PATTERNS.some(pattern => pattern.test(text))) {
+        const a = doc.createElement('a');
+        a.setAttribute('href', text);
+        a.textContent = text;
+        p.textContent = '';
+        p.appendChild(a);
       }
     }
   });
 
   // Figure und Figcaption für Bilder
-  $('figure').each(function() {
-    const $figure = $(this);
-    const $img = $figure.find('img');
-    const $figcaption = $figure.find('figcaption');
+  body.querySelectorAll('figure').forEach(figure => {
+    const img = figure.querySelector('img');
+    const figcaption = figure.querySelector('figcaption');
 
-    if ($img.length > 0) {
-      let content = $figure.html() || '';
-      if ($figcaption.length > 0) {
-        const caption = $figcaption.text();
-        content = $img.get(0).outerHTML + '\n*' + caption + '*';
+    if (img) {
+      const p = doc.createElement('p');
+      p.appendChild(img.cloneNode(true));
+      if (figcaption) {
+        const caption = figcaption.textContent || '';
+        p.appendChild(doc.createTextNode(`\n*${caption}*`));
       }
-      $figure.replaceWith(`<p>${content}</p>`);
+      figure.replaceWith(p);
     }
   });
 
-  return $.html();
+  return body.innerHTML;
 }
 
 /**
@@ -263,11 +269,11 @@ export function cleanWordPressHTML(html: string): string {
  */
 export function extractYouTubeIds(html: string): string[] {
   const ids = new Set<string>();
-  const $ = cheerio.load(html);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
 
   // iframes prüfen
-  $('iframe').each(function() {
-    const src = $(this).attr('src') || '';
+  doc.querySelectorAll('iframe').forEach(iframe => {
+    const src = iframe.getAttribute('src') || '';
     for (const pattern of YOUTUBE_PATTERNS) {
       const match = src.match(pattern);
       if (match) ids.add(match[1]);
@@ -275,21 +281,19 @@ export function extractYouTubeIds(html: string): string[] {
   });
 
   // Links prüfen
-  $('a').each(function() {
-    const href = $(this).attr('href') || '';
+  doc.querySelectorAll('a').forEach(a => {
+    const href = a.getAttribute('href') || '';
     for (const pattern of YOUTUBE_PATTERNS) {
       const match = href.match(pattern);
       if (match) ids.add(match[1]);
     }
   });
 
-  // Text prüfen
-  const text = $('body').text() || html;
+  // Text prüfen (Hinweis: Patterns ohne /g-Flag, daher kein exec-Loop)
+  const text = doc.body.textContent || html;
   for (const pattern of YOUTUBE_PATTERNS) {
-    let match;
-    while ((match = pattern.exec(text)) !== null) {
-      ids.add(match[1]);
-    }
+    const match = text.match(pattern);
+    if (match) ids.add(match[1]);
   }
 
   return Array.from(ids);
@@ -300,10 +304,10 @@ export function extractYouTubeIds(html: string): string[] {
  */
 export function extractImageUrls(html: string): string[] {
   const urls = new Set<string>();
-  const $ = cheerio.load(html);
+  const doc = new DOMParser().parseFromString(html, 'text/html');
 
-  $('img').each(function() {
-    const src = $(this).attr('src');
+  doc.querySelectorAll('img').forEach(img => {
+    const src = img.getAttribute('src');
     if (src) urls.add(src);
   });
 

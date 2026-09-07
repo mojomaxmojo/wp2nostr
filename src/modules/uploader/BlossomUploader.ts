@@ -1,14 +1,21 @@
 /**
  * Blossom Media Uploader
- * Lädt Medien zu Blossom Servern hoch mit NIP-94 Unterstützung
+ * Lädt Medien zu Blossom Servern hoch — gleicher Code-Pfad wie mojobus.co
+ * (@nostrify/nostrify BlossomUploader, NIP-BUD Auth).
+ *
+ * Standard: https://relay.mojobus.co (Haupt-Server, nur mojo/susanne)
+ *           + https://blossom.primal.net (Backup, immer zusätzlich)
  */
 
+import { BlossomUploader } from '@nostrify/nostrify/uploaders';
 import type { NostrEvent } from '@nostrify/nostrify';
 import { sha256 } from '@noble/hashes/sha256';
 
 export interface BlossomServer {
   url: string;
   enabled: boolean;
+  /** Backup-Server: Upload erfolgt zusätzlich, Fehler sind nicht fatal */
+  backup?: boolean;
 }
 
 export interface UploadResult {
@@ -33,33 +40,16 @@ export interface BlossomUploadOptions {
   servers: BlossomServer[];
   maxRetries: number;
   timeout: number; // Millisekunden
-  chunkSize?: number; // Bytes für chunked uploads
 }
 
 export const DEFAULT_UPLOAD_OPTIONS: BlossomUploadOptions = {
   servers: [
-    { url: 'https://blossom.primal.net', enabled: true },
-    { url: 'https://cdn.nostrcheck.me', enabled: true },
+    { url: 'https://relay.mojobus.co', enabled: true, backup: false },
+    { url: 'https://blossom.primal.net', enabled: true, backup: true },
   ],
   maxRetries: 3,
-  timeout: 60000, // 60 Sekunden
+  timeout: 120000, // 2 Minuten (große Bilder/Videos)
 };
-
-/**
- * Blossom Server Upload URL konstruieren
- */
-function getBlossomUploadUrl(serverUrl: string, hash: string): string {
-  const baseUrl = serverUrl.replace(/\/$/, '');
-  return `${baseUrl}/upload`;
-}
-
-/**
- * Blossom Server Listing URL konstruieren
- */
-function getBlossomListingUrl(serverUrl: string, pubkey: string): string {
-  const baseUrl = serverUrl.replace(/\/$/, '');
-  return `${baseUrl}/list/${pubkey}`;
-}
 
 /**
  * Berechnet SHA-256 Hash einer Datei
@@ -70,21 +60,22 @@ export async function calculateFileHash(file: File): Promise<string> {
   return Buffer.from(hash).toString('hex');
 }
 
+interface SignerLike {
+  getPublicKey(): Promise<string>;
+  signEvent(event: NostrEvent): Promise<NostrEvent>;
+}
+
 /**
- * Lädt eine Datei zu einem Blossom Server hoch
+ * Lädt eine Datei zu einem Blossom Server hoch (nostrify BlossomUploader)
  */
 async function uploadToServer(
   server: BlossomServer,
   file: File,
-  hash: string,
   options: BlossomUploadOptions,
   onProgress?: (progress: UploadProgress) => void,
-  sign?: (event: NostrEvent) => Promise<NostrEvent>
+  signer?: SignerLike
 ): Promise<UploadResult> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const uploadUrl = getBlossomUploadUrl(server.url, hash);
+  let lastError: unknown = null;
 
   for (let attempt = 0; attempt < options.maxRetries; attempt++) {
     try {
@@ -97,70 +88,17 @@ async function uploadToServer(
         status: 'uploading',
       });
 
-      // Authorization Header erstellen (wenn Signer vorhanden)
-      const headers: HeadersInit = {};
-      if (sign) {
-        try {
-          // Event für Auth erstellen
-          const now = Math.floor(Date.now() / 1000);
-          const authEvent: NostrEvent = {
-            kind: 24242, // Blossom Auth Event
-            content: 'Upload ' + hash,
-            created_at: now,
-            tags: [
-              ['t', 'upload'],
-              ['x', hash],
-            ],
-            pubkey: '',
-          };
-
-          const signedEvent = await sign(authEvent);
-
-          // Blossom Auth Format
-          const authData = JSON.stringify({
-            event: signedEvent,
-          });
-          headers['Authorization'] = `Nostr ${btoa(JSON.stringify(signedEvent))}`;
-        } catch (error) {
-          console.warn('Event konnte nicht signiert werden, Upload ohne Auth-Header:', error);
-        }
-      }
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), options.timeout);
-
-      const response = await fetch(uploadUrl, {
-        method: 'POST',
-        headers,
-        body: formData,
-        signal: controller.signal,
+      const uploader = new BlossomUploader({
+        servers: [server.url],
+        signer: signer as never,
       });
 
-      clearTimeout(timeoutId);
+      // nostrify BlossomUploader: gibt NIP-94-artige Tags zurück (url, x, m, size, ...)
+      const tags = await uploader.upload(file);
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Upload fehlgeschlagen: ${response.status} ${response.statusText} - ${errorText}`);
-      }
-
-      // Response kann JSON sein oder nur die URL
-      const contentType = response.headers.get('content-type');
-      let resultUrl = uploadUrl.replace('/upload', `/${hash}`);
-
-      if (contentType?.includes('application/json')) {
-        try {
-          const result = await response.json();
-          resultUrl = result.url || resultUrl;
-        } catch (e) {
-          // Response war kein valides JSON
-        }
-      } else {
-        // Text response - könnte die URL sein
-        const text = await response.text();
-        if (text.startsWith('http')) {
-          resultUrl = text;
-        }
-      }
+      const url = tags.find(([name]) => name === 'url')?.[1]
+        || `${server.url.replace(/\/$/, '')}/${await calculateFileHash(file)}`;
+      const hash = tags.find(([name]) => name === 'x')?.[1] || await calculateFileHash(file);
 
       onProgress?.({
         total: 1,
@@ -172,123 +110,72 @@ async function uploadToServer(
       });
 
       return {
-        url: resultUrl,
+        url,
         hash,
         size: file.size,
         type: file.type,
         server: server.url,
-        nip94Tags: [
-          ['url', resultUrl],
-          ['m', file.type],
-          ['x', hash],
-          ['size', file.size.toString()],
-          file.name ? ['name', file.name] : [],
-        ].filter(tag => tag.length > 0) as string[][],
+        nip94Tags: tags,
       };
     } catch (error) {
+      lastError = error;
       console.error(`Upload zu ${server.url} fehlgeschlagen (Versuch ${attempt + 1}):`, error);
 
-      if (attempt === options.maxRetries - 1) {
-        throw new Error(`Upload zu ${server.url} fehlgeschlagen nach ${options.maxRetries} Versuchen: ${error}`);
+      if (attempt < options.maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
       }
-
-      // Vor erneutem Versuch warten
-      await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)));
     }
   }
 
-  throw new Error(`Upload zu ${server.url} fehlgeschlagen`);
-}
-
-/**
- * Lädt eine Datei zu einem primären Server hoch
- */
-async function uploadToPrimaryServer(
-  file: File,
-  options: BlossomUploadOptions,
-  onProgress?: (progress: UploadProgress) => void,
-  sign?: (event: NostrEvent) => Promise<NostrEvent>
-): Promise<UploadResult> {
-  // Primären Server wählen (erster aktivierter)
-  const primaryServer = options.servers.find(s => s.enabled);
-  if (!primaryServer) {
-    throw new Error('Kein aktivierter Blossom Server gefunden');
-  }
-
-  const hash = await calculateFileHash(file);
-  return uploadToServer(primaryServer, file, hash, options, onProgress, sign);
-}
-
-/**
- * Lädt eine Datei zu mehreren Servern hoch (Redundanz)
- */
-async function uploadToMultipleServers(
-  file: File,
-  options: BlossomUploadOptions,
-  onProgress?: (progress: UploadProgress) => void,
-  sign?: (event: NostrEvent) => Promise<NostrEvent>
-): Promise<UploadResult[]> {
-  const enabledServers = options.servers.filter(s => s.enabled);
-  if (enabledServers.length === 0) {
-    throw new Error('Kein aktivierter Blossom Server gefunden');
-  }
-
-  const hash = await calculateFileHash(file);
-  const results: UploadResult[] = [];
-  let completed = 0;
-
-  // Parallel upload zu allen Servern
-  const uploadPromises = enabledServers.map(server =>
-    uploadToServer(server, file, hash, options, (progress) => {
-      onProgress?.({
-        ...progress,
-        total: enabledServers.length,
-        completed: completed,
-        currentServer: server.url,
-      });
-    }, sign).then(result => {
-      completed++;
-      onProgress?.({
-        total: enabledServers.length,
-        completed,
-        currentFile: file.name,
-        currentServer: server.url,
-        percentage: Math.round((completed / enabledServers.length) * 100),
-        status: 'completed',
-      });
-      return result;
-    })
+  throw new Error(
+    `Upload zu ${server.url} fehlgeschlagen nach ${options.maxRetries} Versuchen: ${
+      lastError instanceof Error ? lastError.message : String(lastError)
+    }`
   );
-
-  try {
-    results.push(...await Promise.all(uploadPromises));
-  } catch (error) {
-    // Mindestens ein Server sollte erfolgreich sein
-    if (results.length === 0) {
-      throw error;
-    }
-    console.warn('Einige Server uploads fehlgeschlagen, aber mindestens einer erfolgreich:', error);
-  }
-
-  return results;
 }
 
 /**
- * Lädt eine einzelne Datei hoch
+ * Lädt eine Datei hoch:
+ * 1. Primäre Server (nicht backup) — Fehler sind fatal
+ * 2. Backup-Server — Fehler werden nur geloggt
+ *
+ * @returns Ergebnis vom ersten erfolgreichen primären Server
  */
 export async function uploadFile(
   file: File,
   options: Partial<BlossomUploadOptions> = {},
   onProgress?: (progress: UploadProgress) => void,
-  sign?: (event: NostrEvent) => Promise<NostrEvent>
+  signer?: SignerLike
 ): Promise<UploadResult> {
   const opts = { ...DEFAULT_UPLOAD_OPTIONS, ...options };
+  const enabledServers = opts.servers.filter(s => s.enabled);
 
-  // Upload zu allen aktivierten Servern
-  const results = await uploadToMultipleServers(file, opts, onProgress, sign);
+  const primaryServers = enabledServers.filter(s => !s.backup);
+  const backupServers = enabledServers.filter(s => s.backup);
 
-  // Primäres Ergebnis zurückgeben (erster Server)
-  return results[0];
+  if (primaryServers.length === 0 && backupServers.length === 0) {
+    throw new Error('Kein aktivierter Blossom Server gefunden');
+  }
+
+  // Backup-Uploads parallel starten (nicht blockierend, Fehler egal)
+  for (const backup of backupServers) {
+    uploadToServer(backup, file, opts, onProgress, signer).catch(error => {
+      console.warn(`Backup-Upload zu ${backup.url} fehlgeschlagen (nicht kritisch):`, error);
+    });
+  }
+
+  // Primäre Server sequentiell (erste erfolgreiche gewinnt)
+  let lastError: unknown = null;
+  for (const server of primaryServers.length > 0 ? primaryServers : backupServers) {
+    try {
+      return await uploadToServer(server, file, opts, onProgress, signer);
+    } catch (error) {
+      lastError = error;
+      console.error(`Upload zu ${server.url} fehlgeschlagen, versuche nächsten Server:`, error);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('Alle Blossom-Uploads fehlgeschlagen');
 }
 
 /**
@@ -298,10 +185,10 @@ export async function uploadFiles(
   files: File[],
   options: Partial<BlossomUploadOptions> = {},
   onProgress?: (progress: UploadProgress) => void,
-  sign?: (event: NostrEvent) => Promise<NostrEvent>
+  signer?: SignerLike
 ): Promise<UploadResult[]> {
   const results: UploadResult[] = [];
-  let total = files.length;
+  const total = files.length;
   let completed = 0;
 
   for (const file of files) {
@@ -326,7 +213,7 @@ export async function uploadFiles(
             percentage: Math.round(((completed + fileProgress.percentage / 100) / total) * 100),
           });
         },
-        sign
+        signer
       );
       results.push(result);
       completed++;
@@ -355,27 +242,10 @@ export async function uploadFiles(
 export function isBlossomUrl(url: string): boolean {
   try {
     const parsed = new URL(url);
-    return parsed.pathname === '/upload' ||
-           /^[a-f0-9]{64}$/.test(parsed.pathname.split('/').pop() || '');
+    return /^[a-f0-9]{64}$/.test(parsed.pathname.split('/').pop() || '');
   } catch {
     return false;
   }
-}
-
-/**
- * Extrahiert den Hash aus einem Blossom URL
- */
-export function extractHashFromBlossomUrl(url: string): string | null {
-  try {
-    const parsed = new URL(url);
-    const hash = parsed.pathname.split('/').pop();
-    if (hash && /^[a-f0-9]{64}$/.test(hash)) {
-      return hash;
-    }
-  } catch {
-    // Ignore
-  }
-  return null;
 }
 
 /**

@@ -1,9 +1,13 @@
 /**
  * WordPress Import Page
- * Hauptseite für WordPress zu Nostr Konvertierung
+ * Importiert Artikel direkt von der WordPress-REST-API (mojobus.org)
+ * und veröffentlicht sie als mojobus.co-kompatible NIP-23 Artikel.
+ *
+ * Flow: Kategorien laden → Zielkategorien zuordnen → Artikel laden →
+ *       Medien zu Blossom → Veröffentlichen (oder Dry-Run)
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,37 +16,62 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { Switch } from '@/components/ui/switch';
 import { ProgressIndicator, type ProgressStep } from '@/components/progress/ProgressIndicator';
 import { ArticlePreview } from '@/components/article-preview/ArticlePreview';
+import { CategoryMapper } from '@/components/wp-import/CategoryMapper';
 import { SettingsPanel } from '@/components/wp-import/SettingsPanel';
+import {
+  fetchWPCategories,
+  fetchWPPosts,
+  type WPCategory,
+} from '@/modules/parser/WordPressRestClient';
 import { parseWordPressXML, type WordPressPost } from '@/modules/parser/WordPressParser';
-import { convertHTMLToMarkdown, validateMarkdown, extractImageUrls } from '@/modules/converter/HTMLToMarkdown';
+import { convertHTMLToMarkdown, validateMarkdown } from '@/modules/converter/HTMLToMarkdown';
 import { uploadFiles, validateFileForUpload, type UploadProgress } from '@/modules/uploader/BlossomUploader';
 import {
   downloadMedias,
   extractImageUrlsFromArticle,
   replaceUrlsInMarkdown,
-  type DownloadedMedia,
-  type DownloadProgress
 } from '@/modules/uploader/MediaDownloader';
-import { publishArticles, validateArticleData, type PublishProgress } from '@/modules/publisher/NostrPublisher';
-import { loadConfig, type ImportConfig } from '@/modules/config/ConfigManager';
+import {
+  publishArticles,
+  buildArticleTags,
+  buildDTag,
+} from '@/modules/publisher/NostrPublisher';
+import { resolveMappingForPost, buildDefaultMappings } from '@/modules/config/CategoryMapping';
+import { loadConfig, saveConfig, type ImportConfig } from '@/modules/config/ConfigManager';
+import {
+  loadImportIndex,
+  markImported,
+  clearImportIndex,
+  importIndexStats,
+} from '@/modules/import/ImportIndex';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostr } from '@nostrify/react';
 import { LoginArea } from '@/components/auth/LoginArea';
 import { useToast } from '@/hooks/useToast';
 import {
-  Upload,
   FileText,
   Image as ImageIcon,
-  CheckCircle2,
-  XCircle,
-  AlertTriangle,
-  Settings,
   Play,
   AlertCircle,
   FolderOpen,
+  RefreshCw,
+  ShieldCheck,
+  ShieldAlert,
+  Download,
+  FlaskConical,
+  ExternalLink,
+  Trash2,
 } from 'lucide-react';
+
+// mojobus.co Autoren (nur diese erscheinen auf mojobus.co und dürfen
+// auf relay.mojobus.co hochladen)
+const MOJOBUS_AUTHORS: Record<string, string> = {
+  '4d584dab7c880a9809e7df0476d745bfe9a3fe91a1c062bc1fec024e0b5e1f1f': 'mojo (Max)',
+  '94ebd1c0940881de438b7f3c532b73e0d4d6c6b0160d3fe0b8a55fe49d477bd4': 'susanne',
+};
 
 interface ConvertedArticle {
   post: WordPressPost;
@@ -51,10 +80,30 @@ interface ConvertedArticle {
   errors: string[];
   selected: boolean;
   mediaUrls: Map<string, string>; // Original URL -> Blossom URL
+  featuredBlossomUrl?: string; // Titelbild → Blossom URL
+  targetCategoryId: string;
+  extraTags: string[];
+  dTag: string;
+  alreadyImported: boolean;
   uploadResults?: {
     success: number;
     failed: number;
   };
+}
+
+interface PublishOutcome {
+  title: string;
+  dTag: string;
+  naddr?: string;
+  success: boolean;
+  dryRun: boolean;
+  relayCount: number;
+}
+
+function mappingsToRecord(mappings: { wpCategoryId: string }[]) {
+  const record: Record<string, (typeof mappings)[number]> = {};
+  for (const m of mappings) record[m.wpCategoryId] = m;
+  return record;
 }
 
 export function WPImportPage() {
@@ -63,13 +112,27 @@ export function WPImportPage() {
   const { nostr } = useNostr();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [config, setConfig] = useState<ImportConfig>(loadConfig());
-  const [parsedData, setParsedData] = useState<WordPressPost[] | null>(null);
+  const [config, setConfigState] = useState<ImportConfig>(loadConfig());
+  const setConfig = (next: ImportConfig) => {
+    setConfigState(next);
+    saveConfig(next);
+  };
+
+  // REST-Import
+  const [wpCategories, setWpCategories] = useState<WPCategory[]>([]);
+  const [mappings, setMappings] = useState<Record<string, ImportConfig['categoryMapping'][number]>>({});
+  const [isLoadingCategories, setIsLoadingCategories] = useState(false);
+  const [isLoadingPosts, setIsLoadingPosts] = useState(false);
+
+  // Artikel
   const [convertedArticles, setConvertedArticles] = useState<Map<string, ConvertedArticle>>(new Map());
-  const [isParsing, setIsParsing] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isPublishing, setIsPublishing] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+  const [publishResults, setPublishResults] = useState<PublishOutcome[]>([]);
+
+  // Import-Index (Dedup)
+  const [indexStats, setIndexStats] = useState(importIndexStats());
 
   // Progress
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
@@ -90,74 +153,144 @@ export function WPImportPage() {
     setProgressSteps(prev => [...prev, { name, status }]);
   }, []);
 
-  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  const resetProgress = useCallback(() => {
+    setProgressSteps([]);
+    setTotalProgress(0);
+  }, []);
 
-    await processFile(file);
+  // ==========================================================================
+  // Schritt 1: Kategorien von der Quelle laden
+  // ==========================================================================
 
-    // Reset input value to allow same file to be uploaded again
-    if (event.target) {
-      event.target.value = '';
+  const handleLoadCategories = async () => {
+    setIsLoadingCategories(true);
+    resetProgress();
+    addProgressStep('Kategorien laden', 'in-progress');
+
+    try {
+      const categories = await fetchWPCategories(config.sourceSite, config.corsProxy);
+      setWpCategories(categories);
+
+      // Mappings (bestehende behalten, neue mit Defaults befüllen)
+      const existing = Object.values(mappings);
+      const built = buildDefaultMappings(categories, existing);
+      setMappings(mappingsToRecord(built));
+
+      updateProgress({
+        status: 'completed',
+        message: `${categories.length} Kategorien geladen (insgesamt ${categories.reduce((s, c) => s + c.count, 0)} Beiträge)`,
+      });
+    } catch (error) {
+      console.error('Fehler beim Laden der Kategorien:', error);
+      updateProgress({
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Unbekannter Fehler',
+      });
+      toast({
+        title: 'Fehler',
+        description: `Kategorien konnten nicht geladen werden: ${error instanceof Error ? error.message : ''}`,
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingCategories(false);
     }
   };
 
-  const processFile = async (file: File) => {
-    if (!file.name.endsWith('.xml')) {
+  const handleResetMapping = () => {
+    const built = buildDefaultMappings(wpCategories, []);
+    setMappings(mappingsToRecord(built));
+    toast({ title: 'Mapping zurückgesetzt', description: 'Standard-Zuordnungen wiederhergestellt.' });
+  };
+
+  // ==========================================================================
+  // Schritt 2: Artikel der aktiven Kategorien laden & konvertieren
+  // ==========================================================================
+
+  const handleLoadArticles = async () => {
+    const enabledMappings = Object.values(mappings).filter(m => m.enabled);
+    if (enabledMappings.length === 0) {
       toast({
-        title: 'Fehler',
-        description: 'Bitte laden Sie eine WordPress XML-Exportdatei hoch',
+        title: 'Keine Kategorien aktiv',
+        description: 'Aktivieren Sie mindestens eine Kategorie im Mapping',
         variant: 'destructive',
       });
       return;
     }
 
-    setIsParsing(true);
-    setParsedData(null);
-    setConvertedArticles(new Map());
-    setProgressSteps([]);
-    setTotalProgress(0);
-
-    addProgressStep('WordPress XML parsen', 'in-progress');
+    setIsLoadingPosts(true);
+    resetProgress();
+    setPublishResults([]);
+    addProgressStep('Artikel laden', 'in-progress');
 
     try {
-      const content = await file.text();
-      const data = await parseWordPressXML(content);
+      const categoryIds = enabledMappings.map(m => m.wpCategoryId);
+      const { posts, total } = await fetchWPPosts({
+        site: config.sourceSite,
+        categoryIds,
+        corsProxy: config.corsProxy,
+        onProgress: (loaded, t) => {
+          updateProgress({
+            message: `${loaded}/${t} Artikel geladen`,
+            percentage: t > 0 ? Math.round((loaded / t) * 50) : 0,
+          });
+        },
+      });
 
-      setParsedData(data.posts);
-      updateProgress({ status: 'completed', message: `${data.posts.length} Artikel gefunden` });
+      updateProgress({
+        message: `${posts.length}/${total} Artikel geladen`,
+        percentage: 50,
+      });
 
-      // Artikel konvertieren
       addProgressStep('Artikel konvertieren', 'in-progress');
 
+      // Mapping-Lookup über Kategorienamen: REST liefert Namen, das Mapping
+      // läuft über IDs. Daher bauen wir pro Post die ID-Liste aus der
+      // geladenen Kategorie-Liste (Name → ID).
+      const nameToId = new Map<string, string>();
+      wpCategories.forEach(c => nameToId.set(c.name.toLowerCase(), String(c.id)));
+
+      const index = loadImportIndex();
       const articles = new Map<string, ConvertedArticle>();
       let convertedCount = 0;
 
-      for (const post of data.posts) {
+      for (const post of posts) {
         try {
+          // Kategorienamen → WP-IDs für das Mapping
+          const categoryIdsForPost = post.categories
+            .map(name => nameToId.get(name.toLowerCase()))
+            .filter((id): id is string => Boolean(id));
+
+          const resolved = resolveMappingForPost(categoryIdsForPost, Object.values(mappings))
+            || { targetId: config.defaultTargetCategory, extraTags: [] };
+
           const markdown = convertHTMLToMarkdown(post.content, {
             removeWordPressShortcodes: config.removeWordPressShortcodes,
             preserveImages: true,
             preserveLinks: true,
             convertYouTubeEmbeds: true,
           });
-
           const validation = validateMarkdown(markdown);
-          const imageUrls = extractImageUrls(post.content);
+
+          const alreadyImported = Boolean(index[post.postId]);
 
           articles.set(post.postId, {
             post,
             markdown,
             valid: validation.valid,
             errors: validation.errors,
-            selected: true,
+            // Bereits importierte standardmäßig abwählen (skipImported)
+            selected: !(config.skipImported && alreadyImported),
             mediaUrls: new Map(),
+            targetCategoryId: resolved.targetId,
+            extraTags: resolved.extraTags,
+            dTag: buildDTag(post.postId, post.slug),
+            alreadyImported,
           });
 
           convertedCount++;
           updateProgress({
-            message: `${convertedCount}/${data.posts.length} Artikel konvertiert`,
-            percentage: Math.round((convertedCount / data.posts.length) * 100),
+            message: `${convertedCount}/${posts.length} Artikel konvertiert`,
+            percentage: 50 + Math.round((convertedCount / posts.length) * 50),
           });
         } catch (error) {
           console.error(`Fehler beim Konvertieren von Post ${post.postId}:`, error);
@@ -167,47 +300,33 @@ export function WPImportPage() {
       setConvertedArticles(articles);
       updateProgress({
         status: 'completed',
-        message: `${articles.size} Artikel erfolgreich konvertiert`
+        message: `${articles.size} Artikel konvertiert, ${Array.from(articles.values()).filter(a => a.alreadyImported).length} bereits importiert`,
       });
-
-      setTotalProgress(50);
+      setTotalProgress(100);
 
       toast({
-        title: 'Erfolg',
-        description: `${articles.size} Artikel erfolgreich konvertiert`,
+        title: 'Artikel geladen',
+        description: `${articles.size} Artikel gefunden (${Array.from(articles.values()).filter(a => a.alreadyImported).length} bereits importiert)`,
       });
     } catch (error) {
-      console.error('Fehler beim Importieren:', error);
-      updateProgress({ status: 'failed', message: error instanceof Error ? error.message : 'Unbekannter Fehler' });
+      console.error('Fehler beim Laden der Artikel:', error);
+      updateProgress({
+        status: 'failed',
+        message: error instanceof Error ? error.message : 'Unbekannter Fehler',
+      });
       toast({
         title: 'Fehler',
-        description: error instanceof Error ? error.message : 'Konnte WordPress XML nicht parsen',
+        description: error instanceof Error ? error.message : 'Artikel konnten nicht geladen werden',
         variant: 'destructive',
       });
     } finally {
-      setIsParsing(false);
+      setIsLoadingPosts(false);
     }
   };
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-  };
-
-  const handleDrop = async (e: React.DragEvent) => {
-    e.preventDefault();
-    setIsDragging(false);
-
-    const file = e.dataTransfer.files?.[0];
-    if (!file) return;
-
-    await processFile(file);
-  };
+  // ==========================================================================
+  // Schritt 3: Medien herunterladen & zu Blossom hochladen
+  // ==========================================================================
 
   const handleUploadMedia = async () => {
     if (!user || !user.signer) {
@@ -229,58 +348,51 @@ export function WPImportPage() {
     }
 
     setIsUploading(true);
+    resetProgress();
     addProgressStep('Medien herunterladen', 'in-progress');
 
     try {
       const articles = new Map(convertedArticles);
       const allImageUrls = new Set<string>();
-      const allDownloadedMedias: DownloadedMedia[] = [];
       let totalFiles = 0;
-      let downloadedCount = 0;
 
-      // Alle Bild-URLs aus ausgewählten Artikeln sammeln
+      // Alle Bild-URLs (inkl. Titelbilder) aus ausgewählten Artikeln sammeln
       articles.forEach((article) => {
         if (article.selected) {
           const imageUrls = extractImageUrlsFromArticle(article.post.content);
           imageUrls.forEach(url => allImageUrls.add(url));
-          totalFiles += imageUrls.length;
+          if (article.post.featuredImageUrl) {
+            allImageUrls.add(article.post.featuredImageUrl);
+          }
+          totalFiles += imageUrls.length + (article.post.featuredImageUrl ? 1 : 0);
         }
       });
 
-      if (totalFiles === 0) {
+      if (allImageUrls.size === 0) {
         updateProgress({ status: 'completed', message: 'Keine Medien zum Hochladen' });
         setIsUploading(false);
+        toast({ title: 'Keine Medien', description: 'Die ausgewählten Artikel enthalten keine Bilder.' });
         return;
       }
 
       updateProgress({
-        message: `${downloadedCount}/${totalFiles} Medien gefunden`,
-        percentage: Math.round((downloadedCount / totalFiles) * 50),
+        message: `${allImageUrls.size} Medien gefunden`,
+        percentage: 0,
       });
 
-      // URLs zu Array konvertieren
-      const urlArray = Array.from(allImageUrls);
-
-      // Medien herunterladen
-      addProgressStep('Medien herunterladen', 'in-progress');
-
-      // CORS Proxy für Downloads verwenden
-      const corsProxy = 'https://proxy.shakespeare.diy/?url={href}';
-
+      // Medien herunterladen (via CORS-Proxy-Fallback)
       const downloadedMedias = await downloadMedias(
-        urlArray,
+        Array.from(allImageUrls),
         (progress) => {
           updateProgress({
             message: `${progress.completed}/${progress.total} Medien heruntergeladen`,
             percentage: Math.round((progress.completed / progress.total) * 50),
           });
         },
-        corsProxy
+        config.corsProxy
       );
 
-      downloadedCount = downloadedMedias.length;
-
-      if (downloadedCount === 0) {
+      if (downloadedMedias.length === 0) {
         updateProgress({ status: 'completed', message: 'Keine Medien konnten heruntergeladen werden' });
         setIsUploading(false);
         toast({
@@ -292,34 +404,27 @@ export function WPImportPage() {
 
       updateProgress({
         status: 'completed',
-        message: `${downloadedCount}/${totalFiles} Medien erfolgreich heruntergeladen`,
+        message: `${downloadedMedias.length}/${allImageUrls.size} Medien heruntergeladen`,
       });
 
-      setTotalProgress(50);
-
-      // Zu Blossom hochladen
+      // Zu Blossom hochladen (relay.mojobus.co + primal Backup)
       addProgressStep('Medien zu Blossom hochladen', 'in-progress');
-
-      const sign = async (event: any) => {
-        const signed = await user.signer.signEvent(event);
-        return signed;
-      };
 
       const uploadResults = await uploadFiles(
         downloadedMedias.map(m => m.file),
         {
           servers: config.blossomServers,
           maxRetries: 3,
-          timeout: 60000,
+          timeout: 120000,
         },
-        (progress) => {
+        (progress: UploadProgress) => {
           updateProgress({
             message: `${progress.completed}/${progress.total} Medien hochgeladen`,
-            percentage: 50 + Math.round((progress.completed / progress.total) * 40),
+            percentage: 50 + Math.round((progress.completed / progress.total) * 50),
           });
-          setTotalProgress(50 + (progress.percentage / 2.5));
+          setTotalProgress(progress.percentage);
         },
-        sign
+        user.signer
       );
 
       // URL-Map erstellen (Original URL -> Blossom URL)
@@ -328,16 +433,21 @@ export function WPImportPage() {
         urlMap.set(downloadedMedias[index].originalUrl, result.url);
       });
 
-      // URLs in Markdown ersetzen
+      // URLs in Markdown ersetzen + Titelbilder mappen
       addProgressStep('URLs ersetzen', 'in-progress');
       const updatedArticles = new Map<string, ConvertedArticle>();
 
       articles.forEach((article, postId) => {
         if (article.selected) {
           const updatedMarkdown = replaceUrlsInMarkdown(article.markdown, urlMap);
+          const featuredBlossom = article.post.featuredImageUrl
+            ? urlMap.get(article.post.featuredImageUrl)
+            : undefined;
           updatedArticles.set(postId, {
             ...article,
             markdown: updatedMarkdown,
+            featuredBlossomUrl: featuredBlossom,
+            mediaUrls: urlMap,
           });
         } else {
           updatedArticles.set(postId, article);
@@ -348,14 +458,13 @@ export function WPImportPage() {
 
       updateProgress({
         status: 'completed',
-        message: `${uploadResults.length}/${downloadedCount} Medien erfolgreich hochgeladen`,
+        message: `${uploadResults.length} Medien erfolgreich zu Blossom hochgeladen`,
       });
-
-      setTotalProgress(90);
+      setTotalProgress(100);
 
       toast({
         title: 'Upload abgeschlossen',
-        description: `${uploadResults.length} Medien erfolgreich zu Blossom hochgeladen`,
+        description: `${uploadResults.length} Medien erfolgreich hochgeladen`,
       });
     } catch (error) {
       console.error('Fehler beim Hochladen:', error);
@@ -369,6 +478,10 @@ export function WPImportPage() {
       setIsUploading(false);
     }
   };
+
+  // ==========================================================================
+  // Schritt 4: Veröffentlichen (NIP-23, mojobus.co-Schema)
+  // ==========================================================================
 
   const handlePublish = async () => {
     if (!user || !user.signer) {
@@ -389,20 +502,33 @@ export function WPImportPage() {
       return;
     }
 
-    // Ausgewählte Artikel sammeln
+    // Ausgewählte Artikel sammeln (bereits importierte überspringen)
     const selectedArticles = Array.from(convertedArticles.values())
-      .filter(a => a.selected)
-      .map(a => ({
-        title: a.post.title,
-        content: a.markdown,
-        summary: a.post.excerpt,
-        publishedAt: Math.floor(a.post.publishDate.getTime() / 1000),
-        tags: [
-          ...a.post.categories.map(cat => ['t', cat]),
-          ...a.post.tags.map(tag => ['t', tag]),
-          ...config.globalTags.map(tag => ['t', tag]),
-        ],
-      }));
+      .filter(a => a.selected && !(config.skipImported && a.alreadyImported && !config.dryRun))
+      .map((a) => {
+        const tags = buildArticleTags({
+          targetCategoryId: a.targetCategoryId,
+          extraTags: a.extraTags,
+          globalTags: config.globalTags,
+          wpCategories: a.post.categories,
+          wpTags: a.post.tags,
+          preserveCategories: config.preserveCategories,
+          preserveTags: config.preserveTags,
+        });
+
+        return {
+          title: a.post.title,
+          content: a.markdown,
+          summary: a.post.excerpt,
+          image: a.featuredBlossomUrl || a.post.featuredImageUrl,
+          targetCategoryId: a.targetCategoryId,
+          dTag: a.dTag,
+          slug: a.post.slug,
+          url: a.post.link,
+          publishedAt: Math.floor(a.post.publishDate.getTime() / 1000),
+          tags,
+        };
+      });
 
     if (selectedArticles.length === 0) {
       toast({
@@ -413,23 +539,23 @@ export function WPImportPage() {
       return;
     }
 
-    if (config.requireConfirmation) {
+    if (config.requireConfirmation && !config.dryRun) {
       const confirmed = confirm(
-        `${selectedArticles.length} Artikel werden veröffentlicht. Fortfahren?`
+        `${selectedArticles.length} Artikel werden als ${MOJOBUS_AUTHORS[user.pubkey] || user.pubkey.slice(0, 8)} veröffentlicht. Fortfahren?`
       );
       if (!confirmed) return;
     }
 
     setIsPublishing(true);
-    addProgressStep('Artikel veröffentlichen', 'in-progress');
+    resetProgress();
+    addProgressStep(config.dryRun ? 'Dry-Run: Events erzeugen' : 'Artikel veröffentlichen', 'in-progress');
 
     try {
-      const sign = async (event: any) => {
-        const signed = await user.signer.signEvent(event);
-        return signed;
+      const sign = async (event: Parameters<typeof user.signer.signEvent>[0]) => {
+        return user.signer.signEvent(event);
       };
 
-      const publishToRelay = async (relayUrl: string, event: any) => {
+      const publishToRelay = async (relayUrl: string, event: Parameters<ReturnType<typeof nostr.relay>['event']>[0]) => {
         const relay = nostr.relay(relayUrl);
         await relay.event(event);
         return true;
@@ -443,31 +569,77 @@ export function WPImportPage() {
           relays: config.relays,
           postInterval: config.postInterval * 1000,
           preservePublishDate: config.preservePublishDate,
+          dryRun: config.dryRun,
         },
         user.pubkey,
-        sign,
-        publishToRelay,
+        sign as never,
+        publishToRelay as never,
         (progress) => {
           updateProgress({
-            message: `${progress.completed}/${progress.total} Artikel veröffentlicht`,
+            message: config.dryRun
+              ? `${Math.floor(progress.completed)}/${progress.total} Events erzeugt`
+              : `${Math.floor(progress.completed)}/${progress.total} Artikel veröffentlicht`,
             percentage: progress.percentage,
           });
-          setTotalProgress(75 + (progress.percentage / 4));
+          setTotalProgress(progress.percentage);
         }
       );
 
       const successCount = results.filter(r => r.relays.some(relay => relay.success)).length;
 
+      // Erfolgreiche Artikel in den Import-Index aufnehmen (kein Dry-Run)
+      if (!config.dryRun) {
+        for (const result of results) {
+          const article = selectedArticles.find(a => a.dTag === result.articleId)
+            ?? selectedArticles.find(a => result.event.tags.find(([n, v]) => n === 'd' && v === a.dTag));
+          if (article) {
+            const post = Array.from(convertedArticles.values()).find(p => p.dTag === article.dTag);
+            markImported({
+              wpPostId: post?.post.postId || article.dTag,
+              wpTitle: article.title,
+              dTag: result.articleId,
+              eventId: result.eventId,
+              naddr: result.naddr,
+              slug: article.slug,
+              targetCategoryId: article.targetCategoryId,
+              publishedAt: article.publishedAt,
+              importedAt: Date.now(),
+              dryRun: false,
+            });
+          }
+        }
+        setIndexStats(importIndexStats());
+      }
+
+      // Ergebnisse für die Anzeige aufbereiten
+      const outcomes: PublishOutcome[] = results.map((r) => {
+        const dTag = r.articleId;
+        const article = selectedArticles.find(a => a.dTag === dTag)
+          ?? selectedArticles.find(a => r.event.tags.find(([n, v]) => n === 'd' && v === a.dTag));
+        return {
+          title: article?.title || dTag,
+          dTag,
+          naddr: r.naddr,
+          success: r.relays.some(relay => relay.success),
+          dryRun: Boolean(config.dryRun),
+          relayCount: r.relays.filter(relay => relay.success).length,
+        };
+      });
+      setPublishResults(outcomes);
+
       updateProgress({
         status: 'completed',
-        message: `${successCount}/${selectedArticles.length} Artikel erfolgreich veröffentlicht`
+        message: config.dryRun
+          ? `${successCount}/${selectedArticles.length} Events erzeugt (nicht gesendet)`
+          : `${successCount}/${selectedArticles.length} Artikel erfolgreich veröffentlicht`,
       });
-
       setTotalProgress(100);
 
       toast({
-        title: 'Veröffentlichung abgeschlossen',
-        description: `${successCount} Artikel erfolgreich auf Nostr veröffentlicht`,
+        title: config.dryRun ? 'Dry-Run abgeschlossen' : 'Veröffentlichung abgeschlossen',
+        description: config.dryRun
+          ? `${successCount} Events erzeugt — es wurde nichts gesendet`
+          : `${successCount} Artikel erfolgreich auf Nostr veröffentlicht`,
       });
     } catch (error) {
       console.error('Fehler beim Veröffentlichen:', error);
@@ -481,6 +653,112 @@ export function WPImportPage() {
       setIsPublishing(false);
     }
   };
+
+  // ==========================================================================
+  // Fallback: XML-Import (alter Flow)
+  // ==========================================================================
+
+  const processXmlFile = async (file: File) => {
+    if (!file.name.endsWith('.xml')) {
+      toast({
+        title: 'Fehler',
+        description: 'Bitte laden Sie eine WordPress XML-Exportdatei hoch',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsLoadingPosts(true);
+    resetProgress();
+    setPublishResults([]);
+    addProgressStep('WordPress XML parsen', 'in-progress');
+
+    try {
+      const content = await file.text();
+      const data = await parseWordPressXML(content);
+      updateProgress({ status: 'completed', message: `${data.posts.length} Artikel gefunden` });
+
+      addProgressStep('Artikel konvertieren', 'in-progress');
+
+      const index = loadImportIndex();
+      const articles = new Map<string, ConvertedArticle>();
+      let convertedCount = 0;
+
+      for (const post of data.posts) {
+        try {
+          const markdown = convertHTMLToMarkdown(post.content, {
+            removeWordPressShortcodes: config.removeWordPressShortcodes,
+            preserveImages: true,
+            preserveLinks: true,
+            convertYouTubeEmbeds: true,
+          });
+          const validation = validateMarkdown(markdown);
+          const alreadyImported = Boolean(index[post.postId]);
+
+          articles.set(post.postId, {
+            post,
+            markdown,
+            valid: validation.valid,
+            errors: validation.errors,
+            selected: !(config.skipImported && alreadyImported),
+            mediaUrls: new Map(),
+            targetCategoryId: config.defaultTargetCategory,
+            extraTags: [],
+            dTag: buildDTag(post.postId, post.slug),
+            alreadyImported,
+          });
+
+          convertedCount++;
+          updateProgress({
+            message: `${convertedCount}/${data.posts.length} Artikel konvertiert`,
+            percentage: Math.round((convertedCount / data.posts.length) * 100),
+          });
+        } catch (error) {
+          console.error(`Fehler beim Konvertieren von Post ${post.postId}:`, error);
+        }
+      }
+
+      setConvertedArticles(articles);
+      updateProgress({
+        status: 'completed',
+        message: `${articles.size} Artikel erfolgreich konvertiert`,
+      });
+      setTotalProgress(100);
+
+      toast({
+        title: 'Erfolg',
+        description: `${articles.size} Artikel aus XML konvertiert`,
+      });
+    } catch (error) {
+      console.error('Fehler beim Importieren:', error);
+      updateProgress({ status: 'failed', message: error instanceof Error ? error.message : 'Unbekannter Fehler' });
+      toast({
+        title: 'Fehler',
+        description: error instanceof Error ? error.message : 'Konnte WordPress XML nicht parsen',
+        variant: 'destructive',
+      });
+    } finally {
+      setIsLoadingPosts(false);
+    }
+  };
+
+  const handleXmlFileInput = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    await processXmlFile(file);
+    if (event.target) event.target.value = '';
+  };
+
+  const handleXmlDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) await processXmlFile(file);
+  };
+
+  // ==========================================================================
+  // UI-Helfer
+  // ==========================================================================
 
   const toggleArticle = (postId: string) => {
     setConvertedArticles(prev => {
@@ -503,18 +781,30 @@ export function WPImportPage() {
     });
   };
 
-  const articlesList = Array.from(convertedArticles.values());
+  const articlesList = useMemo(() => Array.from(convertedArticles.values()), [convertedArticles]);
+  const selectedCount = articlesList.filter(a => a.selected).length;
+  const importedCount = articlesList.filter(a => a.alreadyImported).length;
+
+  const clearIndex = () => {
+    if (!confirm('Import-Index zurücksetzen? Alle Artikel gelten danach wieder als "nicht importiert" (Duplikate möglich).')) return;
+    clearImportIndex();
+    setIndexStats(importIndexStats());
+    toast({ title: 'Import-Index zurückgesetzt' });
+  };
+
+  const authorBadge = user ? MOJOBUS_AUTHORS[user.pubkey] : undefined;
 
   return (
     <div className="container mx-auto py-6 max-w-7xl">
       <div className="mb-6">
         <h1 className="text-3xl font-bold mb-2">WordPress zu Nostr Import</h1>
         <p className="text-muted-foreground">
-          Konvertieren Sie Ihre WordPress-Beiträge zu Nostr Long Form Articles powered by mojobus.cc
+          Importiert Artikel von {config.sourceSite.replace(/^https?:\/\//, '')} als mojobus.co-kompatible Long Form Articles (NIP-23)
         </p>
       </div>
 
-      {!user && (
+      {/* Login-Hinweis mit Autor-Prüfung */}
+      {!user ? (
         <Card className="mb-6">
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
@@ -523,7 +813,35 @@ export function WPImportPage() {
                 <div>
                   <h3 className="font-semibold">Anmeldung erforderlich</h3>
                   <p className="text-sm text-muted-foreground">
-                    Melden Sie sich an um WordPress Beiträge zu Nostr zu publishen
+                    Wichtig: Als <strong>mojo</strong> oder <strong>susanne</strong> einloggen —
+                    nur diese Autoren erscheinen auf mojobus.co und dürfen auf relay.mojobus.co hochladen.
+                  </p>
+                </div>
+              </div>
+              <LoginArea />
+            </div>
+          </CardContent>
+        </Card>
+      ) : (
+        <Card className="mb-6">
+          <CardContent className="pt-6">
+            <div className="flex items-center justify-between flex-wrap gap-3">
+              <div className="flex items-center gap-3">
+                {authorBadge ? (
+                  <ShieldCheck className="h-8 w-8 text-green-500" />
+                ) : (
+                  <ShieldAlert className="h-8 w-8 text-amber-500" />
+                )}
+                <div>
+                  <h3 className="font-semibold">
+                    {authorBadge
+                      ? `Eingeloggt als ${authorBadge} — mojobus.co-Autor ✓`
+                      : 'Fremder Account erkannt'}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {authorBadge
+                      ? 'Artikel erscheinen auf mojobus.co, Blossom-Uploads auf relay.mojobus.co sind erlaubt.'
+                      : 'Artikel erscheinen auf mojobus.co NICHT in den Artikellisten und relay.mojobus.co lehnt Uploads ab. Bitte als mojo oder susanne einloggen.'}
                   </p>
                 </div>
               </div>
@@ -536,96 +854,211 @@ export function WPImportPage() {
       <Tabs defaultValue="import" className="space-y-4">
         <TabsList>
           <TabsTrigger value="import">Import</TabsTrigger>
-          <TabsTrigger value="articles">Artikel</TabsTrigger>
+          <TabsTrigger value="articles">Artikel {articlesList.length > 0 && `(${selectedCount}/${articlesList.length})`}</TabsTrigger>
           <TabsTrigger value="settings">Einstellungen</TabsTrigger>
         </TabsList>
 
+        {/* ============================== IMPORT TAB ============================== */}
         <TabsContent value="import" className="space-y-4">
+          {/* Schritt 1: Quelle */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
-                <Upload className="h-5 w-5" />
-                WordPress Export hochladen
+                <Download className="h-5 w-5" />
+                Schritt 1: Quelle laden
               </CardTitle>
               <CardDescription>
-                Laden Sie Ihre WordPress XML-Exportdatei hoch, um sie zu konvertieren
+                Kategorien werden direkt über die WordPress-REST-API geladen (kein XML-Export nötig)
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div
-                className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors ${
-                  isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' : 'border-muted-foreground/25'
-                }`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-              >
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".xml"
-                  onChange={handleFileUpload}
-                  disabled={isParsing || isUploading || isPublishing}
-                  className="hidden"
-                  id="xml-upload"
-                />
-                <div className="flex flex-col items-center gap-2">
-                  <FolderOpen className={`h-12 w-12 ${isDragging ? 'text-blue-500' : 'text-muted-foreground'}`} />
-                  <div>
-                    <p className="font-medium">Klicken um Datei auszuwählen</p>
-                    <p className="text-sm text-muted-foreground">oder ziehen Sie die Datei hierher</p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    disabled={isParsing || isUploading || isPublishing}
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <Upload className="h-4 w-4 mr-2" />
-                    XML-Datei hochladen
+              <div className="flex items-end gap-3 flex-wrap">
+                <div className="flex-1 min-w-64 space-y-2">
+                  <Label htmlFor="source-site">WordPress-Quelle</Label>
+                  <Input
+                    id="source-site"
+                    value={config.sourceSite}
+                    onChange={(e) => setConfig({ ...config, sourceSite: e.target.value })}
+                    placeholder="https://mojobus.org"
+                  />
+                </div>
+                <Button onClick={handleLoadCategories} disabled={isLoadingCategories || isPublishing}>
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingCategories ? 'animate-spin' : ''}`} />
+                  {isLoadingCategories ? 'Lade…' : wpCategories.length > 0 ? 'Kategorien neu laden' : 'Kategorien laden'}
+                </Button>
+              </div>
+              {wpCategories.length > 0 && (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Badge variant="secondary">{wpCategories.length} Kategorien</Badge>
+                  <Badge variant="secondary">
+                    {wpCategories.reduce((s, c) => s + c.count, 0)} Beiträge gesamt
+                  </Badge>
+                  <span>· Import-Index: {indexStats.total} Artikel bereits importiert</span>
+                  <Button variant="ghost" size="sm" onClick={clearIndex} title="Import-Index zurücksetzen">
+                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Schritt 2: Kategorien zuordnen */}
+          {wpCategories.length > 0 && (
+            <CategoryMapper
+              categories={wpCategories}
+              mappings={mappings}
+              onChange={setMappings}
+              onResetMapping={handleResetMapping}
+            />
+          )}
+
+          {/* Schritt 3: Artikel laden & veröffentlichen */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Schritt 2: Artikel laden & veröffentlichen
+              </CardTitle>
+              <CardDescription>
+                Lädt alle Beiträge der aktiven Kategorien und konvertiert sie zu Markdown
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center gap-3 flex-wrap">
+                <Button onClick={handleLoadArticles} disabled={isLoadingPosts || isLoadingCategories || wpCategories.length === 0 || isPublishing}>
+                  <RefreshCw className={`h-4 w-4 mr-2 ${isLoadingPosts ? 'animate-spin' : ''}`} />
+                  {isLoadingPosts ? 'Lade Artikel…' : 'Artikel laden'}
+                </Button>
+
+                <Button
+                  onClick={handleUploadMedia}
+                  disabled={isUploading || isPublishing || !config.uploadMedia || articlesList.length === 0}
+                  variant="outline"
+                >
+                  <ImageIcon className="h-4 w-4 mr-2" />
+                  Medien hochladen
+                </Button>
+
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-md border">
+                  <FlaskConical className={`h-4 w-4 ${config.dryRun ? 'text-blue-500' : 'text-muted-foreground'}`} />
+                  <Label htmlFor="dry-run" className="text-sm cursor-pointer">Dry-Run</Label>
+                  <Switch
+                    id="dry-run"
+                    checked={config.dryRun}
+                    onCheckedChange={(checked) => setConfig({ ...config, dryRun: checked })}
+                  />
+                </div>
+
+                <Button
+                  onClick={handlePublish}
+                  disabled={isPublishing || !user || articlesList.length === 0}
+                  variant={config.dryRun ? 'secondary' : 'default'}
+                >
+                  <Play className="h-4 w-4 mr-2" />
+                  {config.dryRun ? 'Dry-Run starten' : 'Veröffentlichen'}
+                </Button>
               </div>
 
-              {parsedData && (
-                <div className="flex items-center gap-4">
-                  <div className="flex-1 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Gefundene Artikel</span>
-                      <Badge variant="secondary">{parsedData.length}</Badge>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-muted-foreground">Konvertierte Artikel</span>
-                      <Badge variant="default">{articlesList.length}</Badge>
-                    </div>
-                  </div>
-                  <Separator orientation="vertical" className="h-12" />
-                  <div className="space-y-2">
-                    <Button
-                      onClick={handleUploadMedia}
-                      disabled={isUploading || isPublishing || !config.uploadMedia}
-                    >
-                      <ImageIcon className="h-4 w-4 mr-2" />
-                      Medien hochladen
-                    </Button>
-                    <Button
-                      onClick={handlePublish}
-                      disabled={isPublishing || !user}
-                      variant="default"
-                    >
-                      <Play className="h-4 w-4 mr-2" />
-                      Veröffentlichen
-                    </Button>
-                  </div>
+              {articlesList.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap text-sm">
+                  <Badge variant="default">{selectedCount} ausgewählt</Badge>
+                  <Badge variant="secondary">{articlesList.length} geladen</Badge>
+                  {importedCount > 0 && (
+                    <Badge variant="outline">{importedCount} bereits importiert (übersprungen)</Badge>
+                  )}
+                  {config.dryRun && (
+                    <Badge variant="outline" className="text-blue-600 border-blue-400">Dry-Run: es wird nichts gesendet</Badge>
+                  )}
                 </div>
               )}
+
+              {/* XML-Fallback */}
+              <Separator />
+              <details className="text-sm">
+                <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                  Alternativ: WordPress XML-Exportdatei hochladen (Fallback)
+                </summary>
+                <div
+                  className={`mt-3 border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                    isDragging ? 'border-blue-500 bg-blue-50 dark:bg-blue-950/20' : 'border-muted-foreground/25'
+                  }`}
+                  onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+                  onDragLeave={(e) => { e.preventDefault(); setIsDragging(false); }}
+                  onDrop={handleXmlDrop}
+                >
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".xml"
+                    onChange={handleXmlFileInput}
+                    disabled={isLoadingPosts || isUploading || isPublishing}
+                    className="hidden"
+                    id="xml-upload"
+                  />
+                  <div className="flex flex-col items-center gap-2">
+                    <FolderOpen className="h-10 w-10 text-muted-foreground" />
+                    <Button
+                      variant="outline"
+                      disabled={isLoadingPosts || isUploading || isPublishing}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      XML-Datei hochladen
+                    </Button>
+                    <p className="text-xs text-muted-foreground">XML-Artikel erhalten die Standard-Zielkategorie</p>
+                  </div>
+                </div>
+              </details>
             </CardContent>
           </Card>
 
           {progressSteps.length > 0 && (
             <ProgressIndicator steps={progressSteps} totalPercentage={totalProgress} />
           )}
+
+          {/* Ergebnisse */}
+          {publishResults.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Ergebnisse</CardTitle>
+                <CardDescription>
+                  {publishResults.filter(r => r.success).length}/{publishResults.length} erfolgreich
+                  {publishResults.some(r => r.dryRun) && ' (Dry-Run — nichts wurde gesendet)'}
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="max-h-96">
+                  <div className="space-y-2 pr-4">
+                    {publishResults.map((result, i) => (
+                      <div key={i} className="flex items-center justify-between gap-3 text-sm py-1.5 border-b last:border-0">
+                        <span className="flex-1 truncate">{result.title}</span>
+                        {result.dryRun ? (
+                          <Badge variant="outline" className="text-blue-600 border-blue-400">Dry-Run OK</Badge>
+                        ) : result.success ? (
+                          result.naddr ? (
+                            <a
+                              href={`https://mojobus.co/${result.naddr}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 text-blue-500 hover:underline text-xs"
+                            >
+                              auf mojobus.co <ExternalLink className="h-3 w-3" />
+                            </a>
+                          ) : (
+                            <Badge variant="outline" className="text-green-600">✓ {result.relayCount} Relays</Badge>
+                          )
+                        ) : (
+                          <Badge variant="destructive">fehlgeschlagen</Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
 
+        {/* ============================== ARTIKEL TAB ============================== */}
         <TabsContent value="articles" className="space-y-4">
           <Card>
             <CardHeader>
@@ -654,14 +1087,14 @@ export function WPImportPage() {
                 </div>
               </CardTitle>
               <CardDescription>
-                Wählen Sie die Artikel aus, die Sie veröffentlichen möchten
+                Wählen Sie die Artikel aus, die Sie veröffentlichen möchten (Zielkategorie wird pro Artikel angezeigt)
               </CardDescription>
             </CardHeader>
             <CardContent>
               {articlesList.length === 0 ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <FileText className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                  <p>Keine Artikel geladen. Importieren Sie zuerst eine WordPress XML-Datei.</p>
+                  <p>Keine Artikel geladen. Laden Sie zuerst Kategorien und Artikel über die REST-API.</p>
                 </div>
               ) : (
                 <ScrollArea className="h-[calc(100vh-24rem)]">
@@ -673,6 +1106,9 @@ export function WPImportPage() {
                         markdownContent={article.markdown}
                         selected={article.selected}
                         onToggle={toggleArticle}
+                        targetCategoryId={article.targetCategoryId}
+                        extraTags={article.extraTags}
+                        alreadyImported={article.alreadyImported}
                       />
                     ))}
                   </div>
@@ -682,6 +1118,7 @@ export function WPImportPage() {
           </Card>
         </TabsContent>
 
+        {/* ============================== EINSTELLUNGEN TAB ============================== */}
         <TabsContent value="settings">
           <SettingsPanel config={config} onChange={setConfig} />
         </TabsContent>

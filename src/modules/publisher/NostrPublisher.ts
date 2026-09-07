@@ -1,9 +1,12 @@
 /**
  * Nostr Publisher
- * Veröffentlicht Long Form Articles (NIP-23) auf Nostr
+ * Veröffentlicht Long Form Articles (NIP-23, Kind 30023) auf Nostr —
+ * kompatibel mit dem mojobus.co-Schema (type-Tag, Pflicht-t-Tags, published_at).
  */
 
 import type { NostrEvent } from '@nostrify/nostrify';
+import { nip19 } from 'nostr-tools';
+import { getTargetCategory, type TargetCategory } from '@/modules/config/TargetCategories';
 
 export interface NostrRelay {
   url: string;
@@ -17,9 +20,15 @@ export interface ArticleData {
   content: string;
   summary?: string;
   image?: string;
-  url?: string; // URL des Artikels
-  publishedAt?: number; // Unix timestamp
-  tags?: string[][];
+  /** mojobus.co-Zielkategorie (bestimmt type-Tag + Pflicht-t-Tags) */
+  targetCategoryId?: string;
+  /** Stabiler d-Tag, z.B. article-{wpId}-{slug} — ersetzt Duplikate statt neue zu erstellen */
+  dTag?: string;
+  /** WordPress-Slug für den slug-Tag */
+  slug?: string;
+  url?: string; // URL des Original-Artikels
+  publishedAt?: number; // Unix timestamp (Original-Veröffentlichungsdatum)
+  tags?: string[][]; // zusammengesetzte t-Tags etc.
 }
 
 export interface PublishProgress {
@@ -33,6 +42,7 @@ export interface PublishProgress {
 export interface PublishResult {
   articleId: string; // d tag
   eventId: string;   // Event ID
+  naddr?: string;    // NIP-19 Address-Referenz
   relays: {
     url: string;
     success: boolean;
@@ -47,64 +57,104 @@ export interface PublishOptions {
   relays: NostrRelay[];
   postInterval: number; // Millisekunden zwischen Posts
   preservePublishDate: boolean;
+  /** Dry-Run: Event erzeugen, aber nicht signieren/senden */
+  dryRun?: boolean;
 }
 
 /**
- * Generiert einen eindeutigen d-tag für Artikel
+ * Generiert einen stabilen d-Tag aus WordPress-Daten.
+ * Replaceable Events mit gleichem d-Tag ersetzen sich gegenseitig →
+ * erneute Imports erzeugen keine Duplikate.
  */
-function generateArticleId(): string {
-  return `article-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+export function buildDTag(wpPostId: string, slug?: string): string {
+  const cleanSlug = (slug || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60);
+  return cleanSlug ? `article-${wpPostId}-${cleanSlug}` : `article-${wpPostId}`;
 }
 
 /**
- * Erstellt ein Long Form Article Event (NIP-23)
+ * Slug für den slug-Tag (SEO-Slug wie bei mojobus.co)
+ */
+export function buildSlugTag(slug?: string, title?: string): string {
+  const source = slug || title || '';
+  return source
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 80);
+}
+
+/**
+ * Erstellt ein Long Form Article Event (NIP-23) im mojobus.co-Schema:
+ *   d, type, title, summary, published_at, image, slug, client, r, t-...
  */
 export function createArticleEvent(
   data: ArticleData,
   options: PublishOptions,
   pubkey: string
 ): NostrEvent {
-  const articleId = data.url?.split('/').pop() || generateArticleId();
+  const articleId = data.dTag || buildDTag(data.url?.split('/').pop() || '', data.slug);
   const now = Math.floor(Date.now() / 1000);
-  const publishedAt = options.preservePublishDate && data.publishedAt 
-    ? data.publishedAt 
-    : now;
+  const publishedAt = data.publishedAt ?? now;
+
+  // Zielkategorie bestimmen (default: articles)
+  const target: TargetCategory = getTargetCategory(data.targetCategoryId || 'articles')
+    || getTargetCategory('articles')!;
 
   const tags: string[][] = [
     ['d', articleId],
+    ['type', target.typeTag],
     ['title', data.title],
     ['published_at', publishedAt.toString()],
-    ['client', 'mojobus.cc'],
+    ['client', 'wp2nostr'],
   ];
 
-  // Optionaler Summary
   if (data.summary) {
     tags.push(['summary', data.summary]);
   }
 
-  // Optional Bild
   if (data.image) {
     tags.push(['image', data.image]);
   }
 
-  // URL (wenn angegeben)
-  if (data.url) {
-    tags.push(['url', data.url]);
+  const slugTag = buildSlugTag(data.slug, data.title);
+  if (slugTag) {
+    tags.push(['slug', slugTag]);
   }
 
-  // Poster Info
-  tags.push(['r', options.posterWebsite]);
+  if (data.url) {
+    tags.push(['url', data.url]);
+    tags.push(['r', data.url]);
+  }
 
-  // Custom Tags
-  if (data.tags) {
+  // Pflicht-t-Tags der Zielkategorie + zusätzliche t-Tags
+  if (data.tags && data.tags.length > 0) {
     tags.push(...data.tags);
   }
 
+  // Deduplizierung der Tags (nach erstem Element + Wert)
+  const seen = new Set<string>();
+  const uniqueTags = tags.filter(tag => {
+    const key = tag.join('\u0000');
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  // created_at = Original-Datum (chronologische Sortierung auf mojobus.co)
+  const createdAt = options.preservePublishDate ? publishedAt : now;
+
   const event: NostrEvent = {
-    kind: 30023, // Long Form Article (NIP-23)
+    kind: target.kind, // 30023
     content: data.content,
-    created_at: publishedAt,
-    tags,
+    created_at: createdAt,
+    tags: uniqueTags,
     pubkey,
   };
 
@@ -112,7 +162,74 @@ export function createArticleEvent(
 }
 
 /**
- * Erstellt einen Parameterized Replaceable Event Handler für Long Form Articles
+ * Baut die t-Tags für einen Artikel:
+ * Pflicht-Tags der Zielkategorie + Extra-Tags (Mapping) + globale Tags
+ * (+ optional WP-Kategorien/Tags)
+ */
+export function buildArticleTags(params: {
+  targetCategoryId: string;
+  extraTags?: string[];
+  globalTags?: string[];
+  wpCategories?: string[];
+  wpTags?: string[];
+  preserveCategories?: boolean;
+  preserveTags?: boolean;
+}): string[][] {
+  const target = getTargetCategory(params.targetCategoryId) || getTargetCategory('articles')!;
+
+  const tagSet = new Set<string>();
+  target.requiredTags.forEach(t => tagSet.add(t));
+  (params.extraTags || []).forEach(t => t && tagSet.add(t));
+  (params.globalTags || []).forEach(t => t && tagSet.add(t));
+
+  if (params.preserveCategories) {
+    (params.wpCategories || []).forEach(c => c && tagSet.add(normalizeTag(c)));
+  }
+  if (params.preserveTags) {
+    (params.wpTags || []).forEach(t => t && tagSet.add(normalizeTag(t)));
+  }
+
+  return Array.from(tagSet).map(t => ['t', t]);
+}
+
+/**
+ * Normalisiert einen Tag (kleingeschrieben, Umlaute → ASCII, Leerzeichen → Bindestrich)
+ */
+export function normalizeTag(tag: string): string {
+  return tag
+    .toLowerCase()
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+/**
+ * Erzeugt eine NIP-19 naddr-Referenz für einen Artikel
+ */
+export function createNaddr(
+  articleId: string,
+  pubkey: string,
+  kind: number = 30023,
+  relays: string[] = []
+): string {
+  try {
+    return nip19.naddrEncode({
+      kind,
+      pubkey,
+      identifier: articleId,
+      relays,
+    });
+  } catch (error) {
+    console.error('naddr-Encoding fehlgeschlagen:', error);
+    return '';
+  }
+}
+
+/**
+ * Signiert und veröffentlicht einen Artikel auf allen aktiven Write-Relays
  */
 export async function publishArticle(
   data: ArticleData,
@@ -122,15 +239,36 @@ export async function publishArticle(
   publishToRelay: (relayUrl: string, event: NostrEvent) => Promise<boolean>,
   onProgress?: (progress: PublishProgress) => void
 ): Promise<PublishResult> {
-  // Event erstellen
+  // Event erstellen (mojobus.co-Schema)
   const event = createArticleEvent(data, options, pubkey);
-  
+
+  // d-Tag extrahieren
+  const articleId = event.tags.find(([name]) => name === 'd')?.[1] || '';
+
+  // Dry-Run: Event nur erzeugen, nicht senden
+  if (options.dryRun) {
+    onProgress?.({
+      total: 1,
+      completed: 1,
+      currentRelay: 'dry-run',
+      percentage: 100,
+      status: 'completed',
+    });
+
+    return {
+      articleId,
+      eventId: `dry-run-${articleId}`,
+      relays: [{ url: 'dry-run', success: true }],
+      event,
+    };
+  }
+
   // Event signieren
   const signedEvent = await sign(event);
-  
+
   // Aktiviert write Relays filtern
   const activeRelays = options.relays.filter(r => r.enabled && r.write);
-  
+
   if (activeRelays.length === 0) {
     throw new Error('Keine aktiven Write-Relays gefunden');
   }
@@ -159,7 +297,7 @@ export async function publishArticle(
       });
 
       const success = await publishToRelay(relay.url, signedEvent);
-      
+
       completed++;
       onProgress?.({
         total: activeRelays.length,
@@ -177,7 +315,7 @@ export async function publishArticle(
       completed++;
       const errorMessage = error instanceof Error ? error.message : 'Unbekannter Fehler';
       console.error(`Publish zu ${relay.url} fehlgeschlagen:`, error);
-      
+
       onProgress?.({
         total: activeRelays.length,
         completed,
@@ -202,12 +340,18 @@ export async function publishArticle(
     throw new Error('Publish zu allen Relays fehlgeschlagen');
   }
 
-  // Article ID aus d-tag extrahieren
-  const articleId = signedEvent.tags.find(([name]) => name === 'd')?.[1] || '';
+  // naddr für Ergebnis-Link
+  const naddr = createNaddr(
+    articleId,
+    pubkey,
+    signedEvent.kind,
+    relayResults.filter(r => r.success).map(r => r.url)
+  );
 
   return {
     articleId,
     eventId: signedEvent.id,
+    naddr,
     relays: relayResults,
     event: signedEvent,
   };
@@ -253,12 +397,12 @@ export async function publishArticles(
           });
         }
       );
-      
+
       results.push(result);
       completed++;
-      
-      // Intervall zwischen Posts einhalten (außer beim letzten Artikel)
-      if (i < articles.length - 1 && options.postInterval > 0) {
+
+      // Intervall zwischen Posts einhalten (außer beim letzten Artikel / Dry-Run)
+      if (i < articles.length - 1 && options.postInterval > 0 && !options.dryRun) {
         await new Promise(resolve => setTimeout(resolve, options.postInterval));
       }
     } catch (error) {
@@ -268,13 +412,6 @@ export async function publishArticles(
   }
 
   return results;
-}
-
-/**
- * Erstellt NIP-31 Alt Tag für Events
- */
-export function createAltTag(description: string): string[] {
-  return ['alt', description];
 }
 
 /**
@@ -299,42 +436,4 @@ export function validateArticleData(data: ArticleData): { valid: boolean; errors
     valid: errors.length === 0,
     errors,
   };
-}
-
-/**
- * Erstellt naddr für einen Artikel
- */
-export function createNaddr(
-  articleId: string,
-  pubkey: string,
-  kind: number = 30023,
-  relays: string[] = []
-): string {
-  const data = {
-    kind,
-    pubkey,
-    identifier: articleId,
-    relays,
-  };
-  
-  // In echtem Code müsste nip19.encode() verwendet werden
-  return `naddr:${articleId}`;
-}
-
-/**
- * Generiert einen lesefreundlichen Permalink
- */
-export function generatePermalink(
-  articleId: string,
-  title: string
-): string {
-  // Slug aus Titel erstellen
-  const slug = title
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .replace(/\s+/g, '-')
-    .replace(/-+/g, '-')
-    .trim();
-  
-  return `${slug}-${articleId}`;
 }

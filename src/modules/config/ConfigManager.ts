@@ -8,13 +8,20 @@ import { DEFAULT_CONFIG, type ImportConfig } from './types';
 const STORAGE_KEY = 'wp-nostr-import-config';
 
 /**
- * Lädt die Konfiguration aus localStorage
+ * Lädt die Konfiguration aus localStorage.
+ * Alte Configs (vor dem mojobus.co-Schema) werden verworfen, damit die neuen
+ * Defaults (relay.mojobus.co als Blossom + Publish-Relays) greifen.
  */
 export function loadConfig(): ImportConfig {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      return { ...DEFAULT_CONFIG, ...JSON.parse(stored) };
+      const parsed = JSON.parse(stored) as Partial<ImportConfig>;
+      // Schema-Check: Neue Configs haben sourceSite + corsProxy + categoryMapping
+      if (typeof parsed.sourceSite === 'string' && typeof parsed.corsProxy === 'string') {
+        return { ...DEFAULT_CONFIG, ...parsed };
+      }
+      console.info('Alte Import-Konfiguration erkannt — nutze neue mojobus.co-Defaults.');
     }
   } catch (error) {
     console.error('Fehler beim Laden der Konfiguration:', error);
@@ -57,7 +64,7 @@ export function exportConfig(config: ImportConfig): string {
   // Blossom Server
   lines.push('[blossom_servers]');
   config.blossomServers.forEach(server => {
-    lines.push(`${server.enabled ? 'enabled' : 'disabled'}=${server.url}`);
+    lines.push(`${server.enabled ? 'enabled' : 'disabled'}=${server.url}${server.backup ? ' [backup]' : ''}`);
   });
   lines.push('');
 
@@ -69,6 +76,12 @@ export function exportConfig(config: ImportConfig): string {
     if (relay.write) flags.push('write');
     lines.push(`${relay.enabled ? 'enabled' : 'disabled'}=${relay.url} [${flags.join(',')}]`);
   });
+  lines.push('');
+
+  // Quelle & Ziel
+  lines.push('[target]');
+  lines.push(`source_site=${config.sourceSite}`);
+  lines.push(`default_target_category=${config.defaultTargetCategory}`);
   lines.push('');
 
   // Posting Einstellungen
@@ -108,6 +121,14 @@ export function exportConfig(config: ImportConfig): string {
   lines.push('[preview]');
   lines.push(`show_preview=${config.showPreview}`);
   lines.push(`require_confirmation=${config.requireConfirmation}`);
+  lines.push('');
+
+  // Import-Verhalten
+  lines.push('[import]');
+  lines.push(`dry_run=${config.dryRun}`);
+  lines.push(`skip_imported=${config.skipImported}`);
+  lines.push(`teaser_note=${config.teaserNote}`);
+  lines.push(`cors_proxy=${config.corsProxy}`);
 
   return lines.join('\n');
 }
@@ -140,10 +161,17 @@ export function importConfig(confContent: string): Partial<ImportConfig> {
     const value = valueParts.join('=').trim();
 
     switch (currentSection) {
+      case 'target':
+        if (key === 'source_site') config.sourceSite = value;
+        if (key === 'default_target_category') config.defaultTargetCategory = value;
+        break;
+
       case 'blossom_servers':
         if (!config.blossomServers) config.blossomServers = [];
         const enabled = key.startsWith('enabled');
-        config.blossomServers.push({ url: value, enabled });
+        const isBackup = value.includes('[backup]');
+        const serverUrl = value.replace(/\[.*?\]/, '').trim();
+        config.blossomServers.push({ url: serverUrl, enabled, backup: isBackup });
         break;
 
       case 'relays':
@@ -190,6 +218,13 @@ export function importConfig(confContent: string): Partial<ImportConfig> {
       case 'preview':
         if (key === 'show_preview') config.showPreview = value === 'true';
         if (key === 'require_confirmation') config.requireConfirmation = value === 'true';
+        break;
+
+      case 'import':
+        if (key === 'dry_run') config.dryRun = value === 'true';
+        if (key === 'skip_imported') config.skipImported = value === 'true';
+        if (key === 'teaser_note') config.teaserNote = value === 'true';
+        if (key === 'cors_proxy') config.corsProxy = value;
         break;
     }
   }

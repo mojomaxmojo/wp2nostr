@@ -27,9 +27,11 @@ export interface WordPressPost {
   categories: string[];
   tags: string[];
   featuredMedia?: string; // Post ID des Featured Image
+  featuredImageUrl?: string; // Direkte URL des Featured Images (REST-API)
   media: WordPressMedia[];
   slug?: string;
   guid?: string;
+  link?: string; // Original-URL des Artikels (REST-API)
 }
 
 export interface WordPressExport {

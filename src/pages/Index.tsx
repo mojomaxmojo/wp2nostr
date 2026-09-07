@@ -2,12 +2,12 @@ import { Link } from 'react-router-dom';
 import { useSeoMeta } from '@unhead/react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { FileText, Upload, Settings, ArrowRight } from 'lucide-react';
+import { FileText, Upload, Settings, ArrowRight, Download } from 'lucide-react';
 
 const Index = () => {
   useSeoMeta({
-    title: 'WordPress zu Nostr - Powered by mojobus.cc',
-    description: 'Konvertieren Sie WordPress Beiträge zu Nostr Long Form Articles. Automatische Media-Upload, Markdown-Konvertierung und mehr.',
+    title: 'WordPress zu Nostr — mojobus.org → mojobus.co',
+    description: 'Importiert WordPress-Beiträge von mojobus.org direkt als mojobus.co-kompatible Nostr Long Form Articles. Automatische Media-Uploads zu Blossom, Markdown-Konvertierung und Kategorie-Mapping.',
   });
 
   return (
@@ -22,7 +22,7 @@ const Index = () => {
               </div>
               <div>
                 <h1 className="text-xl font-bold">WordPress zu Nostr</h1>
-                <p className="text-sm text-muted-foreground">Powered by mojobus.cc</p>
+                <p className="text-sm text-muted-foreground">mojobus.org → mojobus.co</p>
               </div>
             </div>
             <Link to="/wp-import">
@@ -42,8 +42,9 @@ const Index = () => {
             WordPress zu Nostr Konverter
           </h1>
           <p className="text-xl text-muted-foreground mb-8">
-            Konvertieren Sie alle Ihre WordPress Beiträge automatisch zu Nostr Long Form Articles. 
-            Mit Media-Upload, Markdown-Konvertierung und vollen Nostr-Integration.
+            Importiert Artikel direkt von der WordPress-REST-API (mojobus.org) und veröffentlicht
+            sie als mojobus.co-kompatible Long Form Articles — mit Kategorie-Mapping,
+            Media-Upload zu Blossom und Markdown-Konvertierung.
           </p>
           <div className="flex gap-4 justify-center">
             <Link to="/wp-import">
@@ -68,11 +69,35 @@ const Index = () => {
           <Card className="border-2 hover:border-blue-500 transition-colors">
             <CardHeader>
               <div className="h-12 w-12 rounded-lg bg-blue-100 dark:bg-blue-900/30 flex items-center justify-center mb-2">
-                <Upload className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                <Download className="h-6 w-6 text-blue-600 dark:text-blue-400" />
               </div>
-              <CardTitle>Automatische Konvertierung</CardTitle>
+              <CardTitle>Direkt-Import über REST-API</CardTitle>
               <CardDescription>
-                HTML wird automatisch zu sauberem Markdown konvertiert. Formatierung und Lesbarkeit bleiben erhalten.
+                Kein XML-Export nötig: Kategorien und Beiträge werden direkt von mojobus.org geladen.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+
+          <Card className="border-2 hover:border-purple-500 transition-colors">
+            <CardHeader>
+              <div className="h-12 w-12 rounded-lg bg-purple-100 dark:bg-purple-900/30 flex items-center justify-center mb-2">
+                <FileText className="h-6 w-6 text-purple-600 dark:text-purple-400" />
+              </div>
+              <CardTitle>mojobus.co-Kompatibel</CardTitle>
+              <CardDescription>
+                NIP-23 Artikel mit exakt dem Tag-Schema von mojobus.co — erscheinen automatisch unter /artikel, /artikel/rvlife usw.
+              </CardDescription>
+            </CardHeader>
+          </Card>
+
+          <Card className="border-2 hover:border-pink-500 transition-colors">
+            <CardHeader>
+              <div className="h-12 w-12 rounded-lg bg-pink-100 dark:bg-pink-900/30 flex items-center justify-center mb-2">
+                <Settings className="h-6 w-6 text-pink-600 dark:text-pink-600" />
+              </div>
+              <CardTitle>Volle Kontrolle</CardTitle>
+              <CardDescription>
+                Kategorie-Mapping, Dry-Run, Duplikat-Schutz, Blossom-Server und Relays frei konfigurierbar.
               </CardDescription>
             </CardHeader>
           </Card>
@@ -182,7 +207,7 @@ const Index = () => {
       <footer className="border-t bg-white/50 dark:bg-gray-800/50">
         <div className="container mx-auto px-4 py-6">
           <div className="text-center text-sm text-muted-foreground">
-            <p className="mb-2">Powered by <a href="http://mojobus.cc" className="hover:underline" target="_blank" rel="noopener noreferrer">mojobus.cc</a></p>
+            <p className="mb-2">Importiert von <a href="https://mojobus.org" className="hover:underline" target="_blank" rel="noopener noreferrer">mojobus.org</a> → veröffentlicht für <a href="https://mojobus.co" className="hover:underline" target="_blank" rel="noopener noreferrer">mojobus.co</a></p>
             <p>
               Built with <a href="https://shakespeare.diy" className="hover:underline" target="_blank" rel="noopener noreferrer">Shakespeare</a>
             </p>

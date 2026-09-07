@@ -6,8 +6,9 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Calendar, Tag, Eye, CheckCircle2, XCircle } from 'lucide-react';
+import { Calendar, Tag, Eye, CheckCircle2, XCircle, Target, History } from 'lucide-react';
 import type { WordPressPost } from '@/modules/parser/WordPressParser';
+import { getTargetCategoryName } from '@/modules/config/TargetCategories';
 import { formatDistanceToNow } from 'date-fns';
 import { de } from 'date-fns/locale';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -18,9 +19,15 @@ export interface ArticlePreviewProps {
   selected: boolean;
   onToggle: (postId: string) => void;
   onValidate?: (postId: string, valid: boolean) => void;
+  /** mojobus.co-Zielkategorie (wird als Badge angezeigt) */
+  targetCategoryId?: string;
+  /** Zusätzliche t-Tags die gesetzt werden */
+  extraTags?: string[];
+  /** Artikel wurde bereits importiert */
+  alreadyImported?: boolean;
 }
 
-export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate }: ArticlePreviewProps) {
+export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, extraTags, alreadyImported }: ArticlePreviewProps) {
   // Markdown für Vorschau vereinfacht rendern
   const renderMarkdownPreview = (markdown: string) => {
     let html = markdown;
@@ -89,9 +96,26 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
       <CardContent className="pt-4">
         {/* Tags */}
         <div className="flex flex-wrap gap-2 mb-4">
+          {targetCategoryId && (
+            <Badge className="text-xs" title="mojobus.co-Zielkategorie">
+              <Target className="h-3 w-3 mr-1" />
+              {getTargetCategoryName(targetCategoryId)}
+            </Badge>
+          )}
+          {alreadyImported && (
+            <Badge variant="outline" className="text-xs text-amber-600 border-amber-400">
+              <History className="h-3 w-3 mr-1" />
+              bereits importiert
+            </Badge>
+          )}
           {post.categories.map((cat) => (
             <Badge key={cat} variant="secondary" className="text-xs">
               {cat}
+            </Badge>
+          ))}
+          {extraTags && extraTags.length > 0 && extraTags.map((tag) => (
+            <Badge key={tag} variant="outline" className="text-xs text-blue-600 border-blue-300">
+              #{tag}
             </Badge>
           ))}
           {post.tags.slice(0, 5).map((tag) => (

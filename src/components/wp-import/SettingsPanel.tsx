@@ -27,6 +27,7 @@ interface RelayConfig {
 interface BlossomServerConfig {
   url: string;
   enabled: boolean;
+  backup?: boolean;
 }
 
 export interface SettingsPanelProps {
@@ -136,8 +137,15 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
       {
         url: 'https://',
         enabled: true,
+        backup: false,
       },
     ];
+    updateConfig({ blossomServers: newServers });
+  };
+
+  const toggleBlossomBackup = (index: number) => {
+    const newServers = [...config.blossomServers];
+    newServers[index] = { ...newServers[index], backup: !newServers[index].backup };
     updateConfig({ blossomServers: newServers });
   };
 
@@ -207,36 +215,79 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           </CardHeader>
         </Card>
 
+        {/* Quelle & Ziel */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Quelle & Ziel</CardTitle>
+            <CardDescription>
+              WordPress-Quelle und mojobus.co-Zielschema
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label>WordPress-Quelle (REST-API)</Label>
+              <Input
+                value={config.sourceSite}
+                onChange={(e) => updateConfig({ sourceSite: e.target.value })}
+                placeholder="https://mojobus.org"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>CORS-Proxy (Template mit {'{href}'})</Label>
+              <Input
+                value={config.corsProxy}
+                onChange={(e) => updateConfig({ corsProxy: e.target.value })}
+                placeholder="https://proxy.shakespeare.diy/?url={href}"
+              />
+              <p className="text-xs text-muted-foreground">
+                Wird für Media-Downloads verwendet, falls direkte Requests an CORS scheitern.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Blossom Server */}
         <Card>
           <CardHeader>
             <CardTitle className="text-lg">Blossom Server</CardTitle>
             <CardDescription>
-              Server für Media-Uploads (NIP-94)
+              Medien-Uploads. Standard: relay.mojobus.co (nur mojo/susanne) + blossom.primal.net als Backup.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {config.blossomServers.map((server, index) => (
-              <div key={index} className="flex items-center gap-2">
-                <Switch
-                  checked={server.enabled}
-                  onCheckedChange={() => toggleBlossomServer(index)}
-                />
-                <Input
-                  value={server.url}
-                  onChange={(e) => updateBlossomServerUrl(index, e.target.value)}
-                  placeholder="https://blossom.primal.net"
-                  className="flex-1"
-                />
-                {config.blossomServers.length > 1 && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => removeBlossomServer(index)}
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
-                )}
+              <div key={index} className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={server.enabled}
+                    onCheckedChange={() => toggleBlossomServer(index)}
+                  />
+                  <Input
+                    value={server.url}
+                    onChange={(e) => updateBlossomServerUrl(index, e.target.value)}
+                    placeholder="https://relay.mojobus.co"
+                    className="flex-1"
+                  />
+                  {config.blossomServers.length > 1 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeBlossomServer(index)}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 ml-9">
+                  <Switch
+                    checked={Boolean(server.backup)}
+                    onCheckedChange={() => toggleBlossomBackup(index)}
+                    id={`backup-${index}`}
+                  />
+                  <Label htmlFor={`backup-${index}`} className="text-xs text-muted-foreground cursor-pointer">
+                    Backup-Server (nicht blockierend, immer zusätzlich)
+                  </Label>
+                </div>
               </div>
             ))}
             <Button
@@ -256,7 +307,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
           <CardHeader>
             <CardTitle className="text-lg">Nostr Relays</CardTitle>
             <CardDescription>
-              Mindestens 6 Relays empfohlen. nostr-01.yakihonne.com und relay.primal.net müssen enthalten sein.
+              mojobus.co-Publish-Preset: relay.mojobus.co, relay.primal.net, nos.lol
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -273,7 +324,7 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
                     placeholder="wss://relay.damus.io"
                     className="flex-1"
                   />
-                  {config.relays.length > 6 && (
+                  {config.relays.length > 1 && (
                     <Button
                       variant="ghost"
                       size="sm"
@@ -293,20 +344,18 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
                 </div>
               </div>
             ))}
-            {config.relays.length < 6 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={addRelay}
-                className="w-full"
-              >
-                <Plus className="h-4 w-4 mr-2" />
-                Relay hinzufügen
-              </Button>
-            )}
-            {config.relays.length < 6 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={addRelay}
+              className="w-full"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Relay hinzufügen
+            </Button>
+            {config.relays.filter(r => r.enabled && r.write).length === 0 && (
               <p className="text-xs text-red-500">
-                ⚠️ Mindestens 6 Relays empfohlen
+                ⚠️ Mindestens ein aktives Write-Relay erforderlich
               </p>
             )}
           </CardContent>
@@ -453,6 +502,39 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
                 id="convertToMarkdown"
                 checked={config.convertHtmlToMarkdown}
                 onCheckedChange={(checked) => updateConfig({ convertHtmlToMarkdown: checked })}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Import-Verhalten */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-lg">Import-Verhalten</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="dryRunSetting">Dry-Run (nichts senden, nur Events erzeugen)</Label>
+              <Switch
+                id="dryRunSetting"
+                checked={config.dryRun}
+                onCheckedChange={(checked) => updateConfig({ dryRun: checked })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="skipImported">Bereits importierte Artikel überspringen</Label>
+              <Switch
+                id="skipImported"
+                checked={config.skipImported}
+                onCheckedChange={(checked) => updateConfig({ skipImported: checked })}
+              />
+            </div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="teaserNote">Teaser-Note (Kind 1) pro Artikel</Label>
+              <Switch
+                id="teaserNote"
+                checked={config.teaserNote}
+                onCheckedChange={(checked) => updateConfig({ teaserNote: checked })}
               />
             </div>
           </CardContent>
