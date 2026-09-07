@@ -1109,6 +1109,7 @@ export function WPImportPage() {
                         targetCategoryId={article.targetCategoryId}
                         extraTags={article.extraTags}
                         alreadyImported={article.alreadyImported}
+                        featuredImageUrl={article.featuredBlossomUrl || article.post.featuredImageUrl}
                       />
                     ))}
                   </div>

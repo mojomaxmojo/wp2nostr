@@ -25,9 +25,11 @@ export interface ArticlePreviewProps {
   extraTags?: string[];
   /** Artikel wurde bereits importiert */
   alreadyImported?: boolean;
+  /** Titelbild (nach Blossom-Upload die Blossom-URL, sonst WP-Original) */
+  featuredImageUrl?: string;
 }
 
-export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, extraTags, alreadyImported }: ArticlePreviewProps) {
+export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, extraTags, alreadyImported, featuredImageUrl }: ArticlePreviewProps) {
   // Markdown für Vorschau vereinfacht rendern
   const renderMarkdownPreview = (markdown: string) => {
     let html = markdown;
@@ -38,6 +40,16 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
       '<div class="my-4"><iframe width="560" height="315" src="https://www.youtube.com/embed/$1" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowfullscreen></iframe></div>'
     );
 
+    // Bilder als echte <img>-Tags rendern (nur sichere URL-Schemata)
+    html = html.replace(
+      /!\[([^\]]*)\]\(\s*([^\s)]+)(?:\s+"[^"]*")?\s*\)/gim,
+      (match, alt: string, src: string) => {
+        if (!/^(https?:\/\/|data:image\/)/i.test(src)) return '';
+        const safeAlt = alt.replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        return `<img src="${src}" alt="${safeAlt}" class="my-2 rounded-md max-w-full h-auto" loading="lazy" />`;
+      }
+    );
+
     // Einfaches Rendering für Vorschau (in Produktion: markdown-it verwenden)
     html = html
       .replace(/^### (.*$)/gim, '<h3 class="text-lg font-semibold mt-4 mb-2">$1</h3>')
@@ -45,7 +57,6 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
       .replace(/^# (.*$)/gim, '<h1 class="text-2xl font-bold mt-4 mb-2">$1</h1>')
       .replace(/\*\*(.*)\*\*/gim, '<strong>$1</strong>')
       .replace(/\*(.*)\*/gim, '<em>$1</em>')
-      .replace(/!\[([^\]]*)\]\(([^)]+)\)/gim, '<div class="my-2 text-sm text-muted-foreground">📷 $1</div>')
       .replace(/\[([^\]]+)\]\(([^)]+)\)/gim, '<a href="$2" class="text-blue-500 hover:underline" target="_blank" rel="noopener noreferrer">$1</a>')
       .replace(/\n/gim, '<br />');
 
@@ -136,6 +147,14 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
             <Eye className="h-4 w-4" />
             Vorschau
           </div>
+          {featuredImageUrl && /^(https?:\/\/|data:image\/)/i.test(featuredImageUrl) && (
+            <img
+              src={featuredImageUrl}
+              alt={post.title}
+              className="w-full max-h-64 object-cover rounded-md border"
+              loading="lazy"
+            />
+          )}
           <ScrollArea className="h-64 w-full rounded-md border p-4">
             <div
               className="prose prose-sm dark:prose-invert max-w-none"
