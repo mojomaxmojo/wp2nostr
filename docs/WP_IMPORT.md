@@ -69,9 +69,11 @@ Unterkategorie werden als t-Tags übernommen (identisch zum mojobus.co-Formular)
 - **leon / places:** keine Unterkategorien
 
 ## Infrastruktur
-- **Publish-Relays:** wss://relay.mojobus.co, wss://relay.primal.net, wss://nos.lol
+- **Publish-Relay:** wss://relay.mojobus.co (HAVEN) — die Verteilung an öffentliche
+  Relays übernimmt der HAVEN-Blastr auf dem VPS (relays_blastr.json)
 - **Blossom:** https://relay.mojobus.co (Haupt, nur mojo/susanne) + https://blossom.primal.net (Backup, immer zusätzlich)
 - **Quelle:** https://mojobus.org/wp-json/wp/v2/ (offen, CORS-fähig; Fallback: CORS-Proxy)
+- **Post-Intervall:** 10s (schont HAVEN-Rate-Limits)
 
 ## Flow der WPImportPage
 1. **Kategorien laden** — `fetchWPCategories()` (paginiert, orderby=count)

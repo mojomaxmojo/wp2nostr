@@ -40,6 +40,9 @@ export interface CategoryMapping {
 }
 
 export interface ImportConfig {
+  /** Schema-Version für Migrationen ( loadConfig migriert ältere Stände) */
+  configVersion: number;
+
   // Quelle (WordPress)
   sourceSite: string; // z.B. https://mojobus.org
 
@@ -104,7 +107,11 @@ export interface ImportConfig {
   requireConfirmation: boolean;
 }
 
+export const CURRENT_CONFIG_VERSION = 2;
+
 export const DEFAULT_CONFIG: ImportConfig = {
+  configVersion: CURRENT_CONFIG_VERSION,
+
   sourceSite: 'https://mojobus.org',
 
   defaultTargetCategory: 'articles',
@@ -116,16 +123,15 @@ export const DEFAULT_CONFIG: ImportConfig = {
     { url: 'https://blossom.primal.net', enabled: true, backup: true },
   ],
 
-  // mojobus.co Publish-Relays
+  // Publish NUR auf das eigene HAVEN-Relay — die Verteilung an öffentliche
+  // Relays übernimmt der HAVEN-Blastr (relays_blastr.json auf dem VPS)
   relays: [
     { url: 'wss://relay.mojobus.co', enabled: true, read: true, write: true },
-    { url: 'wss://relay.primal.net', enabled: true, read: true, write: true },
-    { url: 'wss://nos.lol', enabled: true, read: true, write: true },
   ],
 
   posterName: 'mojobus.co',
   posterWebsite: 'https://mojobus.co',
-  postInterval: 2,
+  postInterval: 10, // Sekunden zwischen Posts (HAVEN-Rate-Limits schonen)
   globalTags: [],
   preserveCategories: false,
   preserveTags: true,

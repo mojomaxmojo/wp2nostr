@@ -305,9 +305,10 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
         {/* Relays */}
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Nostr Relays</CardTitle>
+            <CardTitle className="text-lg">Nostr Relays (Publish)</CardTitle>
             <CardDescription>
-              mojobus.co-Publish-Preset: relay.mojobus.co, relay.primal.net, nos.lol
+              Standard: nur relay.mojobus.co (HAVEN). Die Verteilung an öffentliche Relays übernimmt der
+              HAVEN-Blastr auf dem VPS (relays_blastr.json).
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">

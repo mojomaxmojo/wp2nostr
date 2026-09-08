@@ -9,19 +9,40 @@ const STORAGE_KEY = 'wp-nostr-import-config';
 
 /**
  * Lädt die Konfiguration aus localStorage.
- * Alte Configs (vor dem mojobus.co-Schema) werden verworfen, damit die neuen
- * Defaults (relay.mojobus.co als Blossom + Publish-Relays) greifen.
+ *
+ * Migrationen:
+ * - v0 (vor mojobus.co-Schema) → verworfen, Defaults greifen
+ * - v1 (3 Publish-Relays) → v2: Publish nur noch relay.mojobus.co
+ *   (Verteilung übernimmt der HAVEN-Blastr), Blossom-Defaults gesetzt,
+ *   alle übrigen Nutzereinstellungen bleiben erhalten
  */
 export function loadConfig(): ImportConfig {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
       const parsed = JSON.parse(stored) as Partial<ImportConfig>;
-      // Schema-Check: Neue Configs haben sourceSite + corsProxy + categoryMapping
-      if (typeof parsed.sourceSite === 'string' && typeof parsed.corsProxy === 'string') {
-        return { ...DEFAULT_CONFIG, ...parsed };
+      const storedVersion = typeof parsed.configVersion === 'number' ? parsed.configVersion : 0;
+
+      // v0: komplett altes Schema → neue Defaults
+      if (storedVersion === 0 && (typeof parsed.sourceSite !== 'string' || typeof parsed.corsProxy !== 'string')) {
+        return { ...DEFAULT_CONFIG };
       }
-      console.info('Alte Import-Konfiguration erkannt — nutze neue mojobus.co-Defaults.');
+
+      // v1 → v2: Relays + Blossom auf mojobus.co-Standard (HAVEN-Blastr übernimmt Verteilung)
+      if (storedVersion < CURRENT_CONFIG_VERSION) {
+        const migrated: ImportConfig = {
+          ...DEFAULT_CONFIG,
+          ...parsed,
+          relays: DEFAULT_CONFIG.relays.map(r => ({ ...r })),
+          blossomServers: DEFAULT_CONFIG.blossomServers.map(b => ({ ...b })),
+          configVersion: CURRENT_CONFIG_VERSION,
+        };
+        console.info('Import-Konfiguration migriert: Publish nur noch auf relay.mojobus.co (Verteilung via HAVEN-Blastr).');
+        saveConfig(migrated);
+        return migrated;
+      }
+
+      return { ...DEFAULT_CONFIG, ...parsed };
     }
   } catch (error) {
     console.error('Fehler beim Laden der Konfiguration:', error);
