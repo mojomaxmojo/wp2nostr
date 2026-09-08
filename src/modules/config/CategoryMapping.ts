@@ -25,7 +25,7 @@ interface DefaultMappingEntry {
 const DEFAULT_MAPPING: DefaultMappingEntry[] = [
   { slug: 'leben-im-wohnmobil', targetId: 'articles', subcategoryId: 'leben', extraTags: ['rvlife', 'ausstattung'], enabled: true },
   { slug: 'wohnmobil-reiseberichte', targetId: 'articles', subcategoryId: 'reisen', extraTags: ['europa'], enabled: true },
-  { slug: 'selbstausbau', targetId: 'articles', subcategoryId: 'diy', extraTags: ['ausbau'], enabled: true },
+  { slug: 'selbstausbau', targetId: 'articles', subcategoryId: 'diy-ausbau', extraTags: [], enabled: true },
   { slug: 'womo-leben', targetId: 'articles', subcategoryId: 'vanlife', extraTags: ['leben'], enabled: true },
   { slug: 'wohlfuehlen', targetId: 'rvlife', subcategoryId: 'rvlife-lifestyle', extraTags: [], enabled: true },
   { slug: 'weblog', targetId: 'articles', subcategoryId: 'leben', extraTags: [], enabled: true },

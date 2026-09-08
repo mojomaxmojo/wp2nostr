@@ -80,6 +80,42 @@ const ARTICLE_SUBCATEGORIES: TargetSubcategory[] = [
     autoTags: ['diy', 'anleitung'],
     optionalTags: ['tutorial', 'guide', 'selbermachen'],
   },
+  // DIY-Untermenüs (mojobusco/src/config/diy.ts — 1:1)
+  {
+    id: 'diy-lifepo4',
+    name: 'DIY: LiFePo4 Systeme',
+    emoji: '🔋',
+    autoTags: ['diy', 'anleitung', 'lifepo4', 'battery', 'batterie'],
+    optionalTags: ['strom', 'stromversorgung', '12v', '24v', 'bms'],
+  },
+  {
+    id: 'diy-solar',
+    name: 'DIY: Solaranlagen',
+    emoji: '☀️',
+    autoTags: ['diy', 'anleitung', 'solar', 'photovoltaik'],
+    optionalTags: ['sonnenenergie', 'panel', 'watt', 'victron', 'mppt'],
+  },
+  {
+    id: 'diy-reparatur',
+    name: 'DIY: Reparaturanleitungen',
+    emoji: '🔧',
+    autoTags: ['diy', 'anleitung', 'reparatur', 'wartung'],
+    optionalTags: ['reparieren', 'werkstatt', 'ölwechsel', 'bremsen', 'motor'],
+  },
+  {
+    id: 'diy-ausbau',
+    name: 'DIY: Ausbau & Umbau',
+    emoji: '🔨',
+    autoTags: ['diy', 'anleitung', 'ausbau', 'umbau'],
+    optionalTags: ['innenausbau', 'moebel', 'holz', 'design', 'planung'],
+  },
+  {
+    id: 'diy-technik',
+    name: 'DIY: Technik & Elektronik',
+    emoji: '⚙️',
+    autoTags: ['diy', 'anleitung', 'technik', 'elektronik'],
+    optionalTags: ['elektrik', 'verdrahtung', '12v-system', 'led', 'arduino'],
+  },
   {
     id: 'technik',
     name: 'Technik & Solar',
