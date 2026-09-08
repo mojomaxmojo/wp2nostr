@@ -710,19 +710,57 @@ export function WPImportPage() {
         return user.signer.signEvent(event);
       };
 
-      const publishToRelay = async (relayUrl: string, event: Parameters<ReturnType<typeof nostr.relay>['event']>[0]) => {
-        const relay = nostr.relay(relayUrl);
-        // Schutz gegen hängende Verbindungen: max. 60s auf OK-Antwort warten
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        const timeout = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error('Timeout: keine OK-Antwort vom Relay (60s)')), 60000);
-        });
-        try {
-          await Promise.race([relay.event(event), timeout]);
-          return true;
-        } finally {
-          if (timer) clearTimeout(timer);
+      // Relay-Verbindung EINMAL pro URL öffnen und wiederverwenden
+      // (statt pro Artikel eine neue Verbindung — schont HAVENs
+      // Connection-Limiter)
+      let cachedRelay: ReturnType<typeof nostr.relay> | undefined;
+      let cachedRelayUrl = '';
+      const getRelay = (relayUrl: string) => {
+        if (!cachedRelay || cachedRelayUrl !== relayUrl) {
+          cachedRelay = nostr.relay(relayUrl);
+          cachedRelayUrl = relayUrl;
         }
+        return cachedRelay;
+      };
+
+      const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+      const publishToRelay = async (relayUrl: string, event: Parameters<ReturnType<typeof nostr.relay>['event']>[0]) => {
+        let lastError: unknown;
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const relay = getRelay(relayUrl);
+            // Schutz gegen hängende Verbindungen: max. 60s auf OK-Antwort warten
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            const timeout = new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('Timeout: keine OK-Antwort vom Relay (60s)')), 60000);
+            });
+            try {
+              await Promise.race([relay.event(event), timeout]);
+              return true;
+            } finally {
+              if (timer) clearTimeout(timer);
+            }
+          } catch (error) {
+            lastError = error;
+            const msg = error instanceof Error ? error.message : String(error);
+
+            // HAVEN Rate-Limiter: auf das Refill-Fenster (60s) warten und
+            // dasselbe Event erneut senden (max. 3 Versuche)
+            if (/rate-?limited|slow down/i.test(msg)) {
+              updateProgress({
+                message: `Rate-Limit vom Relay — warte 60s und versuche erneut (Versuch ${attempt}/3)…`,
+              });
+              await sleep(60000);
+              continue;
+            }
+
+            throw error; // andere Fehler sofort weiterreichen
+          }
+        }
+
+        throw lastError instanceof Error ? lastError : new Error('Publish nach 3 Versuchen fehlgeschlagen');
       };
 
       const results = await publishArticles(
