@@ -479,6 +479,16 @@ export function WPImportPage() {
       return;
     }
 
+    // relay.mojobus.co (Blossom) akzeptiert nur mojo/susanne
+    if (!MOJOBUS_AUTHORS[user.pubkey]) {
+      toast({
+        title: 'Upload nicht möglich',
+        description: 'relay.mojobus.co erlaubt Blossom-Uploads nur als mojo oder susanne. Bitte mit dem mojobus.co-Autor einloggen.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
     if (!config.uploadMedia) {
       toast({
         title: 'Upload deaktiviert',
@@ -554,6 +564,16 @@ export function WPImportPage() {
       toast({
         title: 'Fehler',
         description: 'Nostr-Verbindung nicht verfügbar',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // relay.mojobus.co + mojobus.co-Filter: nur mojo/susanne erscheinen und dürfen uploaden
+    if (!MOJOBUS_AUTHORS[user.pubkey]) {
+      toast({
+        title: 'Veröffentlichen nicht möglich',
+        description: 'Artikel fremder Accounts erscheinen nicht auf mojobus.co und relay.mojobus.co lehnt Uploads ab. Bitte als mojo oder susanne einloggen.',
         variant: 'destructive',
       });
       return;
@@ -953,6 +973,9 @@ export function WPImportPage() {
   };
 
   const authorBadge = user ? MOJOBUS_AUTHORS[user.pubkey] : undefined;
+  /** Hard-Guard: relay.mojobus.co (Blossom + Relay) akzeptiert nur mojo/susanne */
+  const isMojobusAuthor = Boolean(authorBadge);
+  const blockedByAccount = Boolean(user) && !isMojobusAuthor;
 
   return (
     <div className="container mx-auto py-6 max-w-7xl">
@@ -1093,7 +1116,7 @@ export function WPImportPage() {
 
                 <Button
                   onClick={handleUploadMedia}
-                  disabled={isUploading || isPublishing || !config.uploadMedia || articlesList.length === 0}
+                  disabled={isUploading || isPublishing || !config.uploadMedia || articlesList.length === 0 || blockedByAccount}
                   variant="outline"
                   title="Optional – passiert automatisch beim Veröffentlichen"
                 >
@@ -1113,7 +1136,7 @@ export function WPImportPage() {
 
                 <Button
                   onClick={handlePublish}
-                  disabled={isPublishing || !user || articlesList.length === 0}
+                  disabled={isPublishing || !user || articlesList.length === 0 || blockedByAccount}
                   variant={config.dryRun ? 'secondary' : 'default'}
                 >
                   <Play className="h-4 w-4 mr-2" />
@@ -1377,16 +1400,33 @@ export function WPImportPage() {
                                 Original: {new Date(entry.publishedAt * 1000).toLocaleDateString('de-DE')}
                               </span>
                             )}
-                            {ok && !entry.dryRun ? (
-                              <Badge variant="outline" className="text-green-600 border-green-400">
-                                ✓ {entry.relays.filter(r => r.success).length}/{entry.relays.length} Relays
-                              </Badge>
-                            ) : entry.dryRun ? (
-                              <Badge variant="outline" className="text-blue-600 border-blue-400">nicht gesendet</Badge>
-                            ) : (
-                              <Badge variant="destructive">fehlgeschlagen</Badge>
-                            )}
+                          {ok && !entry.dryRun ? (
+                            <Badge variant="outline" className="text-green-600 border-green-400">
+                              ✓ {entry.relays.filter(r => r.success).length}/{entry.relays.length} Relays
+                            </Badge>
+                          ) : entry.dryRun ? (
+                            <Badge variant="outline" className="text-blue-600 border-blue-400">nicht gesendet</Badge>
+                          ) : (
+                            <Badge variant="destructive">fehlgeschlagen</Badge>
+                          )}
+                        </div>
+
+                        {/* Relay-Details: welches Relay ✓/✗ und warum */}
+                        {entry.relays.length > 0 && !entry.dryRun && (
+                          <div className="space-y-0.5">
+                            {entry.relays.map((r, ri) => (
+                              <div key={ri} className="text-[11px] leading-4">
+                                <span className={r.success ? 'text-green-600' : 'text-red-500'}>
+                                  {r.success ? '✓' : '✗'}
+                                </span>{' '}
+                                <span className="text-muted-foreground">{r.url}</span>
+                                {!r.success && r.error && (
+                                  <span className="text-red-400/80"> — {r.error}</span>
+                                )}
+                              </div>
+                            ))}
                           </div>
+                        )}
 
                           <div className="flex items-center gap-3 flex-wrap text-xs">
                             {url && (
