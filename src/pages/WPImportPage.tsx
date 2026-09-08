@@ -48,6 +48,14 @@ import {
   importIndexStats,
 } from '@/modules/import/ImportIndex';
 import { buildSummary } from '@/modules/import/summary';
+import {
+  loadPublishLog,
+  addLogEntries,
+  clearPublishLog,
+  mojobusUrlFor,
+  exportLogAsText,
+  type PublishLogEntry,
+} from '@/modules/import/PublishLog';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostr } from '@nostrify/react';
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -65,6 +73,8 @@ import {
   FlaskConical,
   ExternalLink,
   Trash2,
+  ScrollText,
+  Copy,
 } from 'lucide-react';
 
 // mojobus.co Autoren (nur diese erscheinen auf mojobus.co und dürfen
@@ -148,6 +158,9 @@ export function WPImportPage() {
 
   // Import-Index (Dedup)
   const [indexStats, setIndexStats] = useState(importIndexStats());
+
+  // Publish-Log
+  const [logEntries, setLogEntries] = useState<PublishLogEntry[]>(() => loadPublishLog());
 
   // Progress
   const [progressSteps, setProgressSteps] = useState<ProgressStep[]>([]);
@@ -741,6 +754,39 @@ export function WPImportPage() {
       });
       setPublishResults(outcomes);
 
+      // Persistenter Publish-Log (Post-URLs auch über Sitzungen hinweg sichtbar)
+      const logEntries: PublishLogEntry[] = results.map((r) => {
+        const article = selectedArticles.find(a => a.dTag === r.articleId)
+          ?? selectedArticles.find(a => r.event.tags.find(([n, v]) => n === 'd' && v === a.dTag));
+        const post = article
+          ? Array.from(currentArticles.values()).find(p => p.dTag === article.dTag)
+          : undefined;
+        const categoryTag = r.event.tags.find(([n]) => n === 'category')?.[1];
+
+        return {
+          ts: Date.now(),
+          wpPostId: post?.post.postId,
+          title: article?.title || r.articleId,
+          dTag: r.articleId,
+          eventId: r.eventId,
+          naddr: r.naddr,
+          targetCategoryId: article?.targetCategoryId,
+          subcategoryId: article?.subcategoryId || categoryTag,
+          publishedAt: article?.publishedAt,
+          createdAt: r.event.created_at,
+          dryRun: Boolean(config.dryRun),
+          relays: r.relays.map(relay => ({
+            url: relay.url,
+            success: relay.success,
+            error: relay.error,
+          })),
+          tTags: r.event.tags.filter(([n]) => n === 't').map(([, v]) => v),
+          category: categoryTag,
+        };
+      });
+      addLogEntries(logEntries);
+      setLogEntries(loadPublishLog());
+
       updateProgress({
         status: 'completed',
         message: config.dryRun
@@ -969,6 +1015,7 @@ export function WPImportPage() {
         <TabsList>
           <TabsTrigger value="import">Import</TabsTrigger>
           <TabsTrigger value="articles">Artikel {articlesList.length > 0 && `(${selectedCount}/${articlesList.length})`}</TabsTrigger>
+          <TabsTrigger value="log">Log {logEntries.length > 0 && `(${logEntries.length})`}</TabsTrigger>
           <TabsTrigger value="settings">Einstellungen</TabsTrigger>
         </TabsList>
 
@@ -1241,6 +1288,146 @@ export function WPImportPage() {
                     ))}
                   </div>
                 </ScrollArea>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* ============================== LOG TAB ============================== */}
+        <TabsContent value="log" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <ScrollText className="h-5 w-5" />
+                  Publish-Log
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const text = exportLogAsText();
+                      const blob = new Blob([text], { type: 'text/plain' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `wp2nostr-publish-log-${Date.now()}.txt`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                    }}
+                    disabled={logEntries.length === 0}
+                  >
+                    <Download className="h-4 w-4 mr-1" />
+                    Export (.txt)
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (!confirm('Publish-Log vollständig löschen?')) return;
+                      clearPublishLog();
+                      setLogEntries([]);
+                    }}
+                    disabled={logEntries.length === 0}
+                  >
+                    <Trash2 className="h-4 w-4 mr-1" />
+                    Log löschen
+                  </Button>
+                </div>
+              </CardTitle>
+              <CardDescription>
+                Alle veröffentlichten Events mit mojobus.co-Link, Relay-Status und Tags (persistiert im Browser)
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {logEntries.length === 0 ? (
+                <div className="text-center py-12 text-muted-foreground">
+                  <ScrollText className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                  <p>Noch keine Einträge. Veröffentlichte Artikel erscheinen hier mit Post-URL.</p>
+                </div>
+              ) : (
+                <div className="max-h-[60vh] overflow-y-auto pr-2">
+                  <div className="space-y-2">
+                    {logEntries.map((entry, i) => {
+                      const url = mojobusUrlFor(entry);
+                      const ok = entry.relays.some(r => r.success);
+                      return (
+                        <div key={`${entry.ts}-${i}`} className="rounded-lg border p-3 space-y-1.5">
+                          <div className="flex items-center justify-between gap-3 flex-wrap">
+                            <span className="font-medium text-sm flex-1 min-w-48">
+                              {entry.dryRun && (
+                                <Badge variant="outline" className="text-blue-600 border-blue-400 mr-2">Dry-Run</Badge>
+                              )}
+                              {entry.title}
+                            </span>
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(entry.ts).toLocaleString('de-DE')}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2 flex-wrap text-xs">
+                            {entry.targetCategoryId && (
+                              <Badge variant="secondary" className="text-xs">
+                                {entry.targetCategoryId}{entry.subcategoryId ? ` → ${entry.subcategoryId}` : ''}
+                              </Badge>
+                            )}
+                            {entry.publishedAt && (
+                              <span className="text-muted-foreground">
+                                Original: {new Date(entry.publishedAt * 1000).toLocaleDateString('de-DE')}
+                              </span>
+                            )}
+                            {ok && !entry.dryRun ? (
+                              <Badge variant="outline" className="text-green-600 border-green-400">
+                                ✓ {entry.relays.filter(r => r.success).length}/{entry.relays.length} Relays
+                              </Badge>
+                            ) : entry.dryRun ? (
+                              <Badge variant="outline" className="text-blue-600 border-blue-400">nicht gesendet</Badge>
+                            ) : (
+                              <Badge variant="destructive">fehlgeschlagen</Badge>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-3 flex-wrap text-xs">
+                            {url && (
+                              <a
+                                href={url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-1 text-blue-500 hover:underline"
+                              >
+                                <ExternalLink className="h-3 w-3" />
+                                auf mojobus.co ansehen
+                              </a>
+                            )}
+                            {entry.naddr && (
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard.writeText(entry.naddr!);
+                                  toast({ title: 'naddr kopiert' });
+                                }}
+                                className="flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                              >
+                                <Copy className="h-3 w-3" />
+                                naddr kopieren
+                              </button>
+                            )}
+                          </div>
+
+                          {entry.tTags.length > 0 && (
+                            <div className="flex flex-wrap gap-1">
+                              {entry.tTags.map(tag => (
+                                <Badge key={tag} variant="outline" className="text-[10px] px-1.5 py-0">
+                                  #{tag}
+                                </Badge>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
             </CardContent>
           </Card>
