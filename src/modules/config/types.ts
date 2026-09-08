@@ -91,6 +91,14 @@ export interface ImportConfig {
   /** CORS-Proxy Template mit {href} für Media-Downloads */
   corsProxy: string;
 
+  // Kurzbeschreibung (summary-Tag, max. 2 Sätze)
+  /** Maximale Sätze in der Kurzbeschreibung */
+  summaryMaxSentences: number;
+  /** Hartes Zeichenlimit der Kurzbeschreibung */
+  summaryMaxChars: number;
+  /** created_at bei Re-Import um +1s erhöhen (erzwingt Relay-Update bereits geposteter Artikel) */
+  bumpCreatedAtOnReimport: boolean;
+
   // Preview Einstellungen
   showPreview: boolean;
   requireConfirmation: boolean;
@@ -133,6 +141,10 @@ export const DEFAULT_CONFIG: ImportConfig = {
   skipImported: true,
   teaserNote: false,
   corsProxy: 'https://proxy.shakespeare.diy/?url={href}',
+
+  summaryMaxSentences: 2,
+  summaryMaxChars: 320,
+  bumpCreatedAtOnReimport: true,
 
   showPreview: true,
   requireConfirmation: true,

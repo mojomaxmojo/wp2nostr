@@ -129,6 +129,9 @@ export function exportConfig(config: ImportConfig): string {
   lines.push(`skip_imported=${config.skipImported}`);
   lines.push(`teaser_note=${config.teaserNote}`);
   lines.push(`cors_proxy=${config.corsProxy}`);
+  lines.push(`summary_max_sentences=${config.summaryMaxSentences}`);
+  lines.push(`summary_max_chars=${config.summaryMaxChars}`);
+  lines.push(`bump_created_at=${config.bumpCreatedAtOnReimport}`);
 
   return lines.join('\n');
 }
@@ -225,6 +228,9 @@ export function importConfig(confContent: string): Partial<ImportConfig> {
         if (key === 'skip_imported') config.skipImported = value === 'true';
         if (key === 'teaser_note') config.teaserNote = value === 'true';
         if (key === 'cors_proxy') config.corsProxy = value;
+        if (key === 'summary_max_sentences') config.summaryMaxSentences = parseInt(value);
+        if (key === 'summary_max_chars') config.summaryMaxChars = parseInt(value);
+        if (key === 'bump_created_at') config.bumpCreatedAtOnReimport = value === 'true';
         break;
     }
   }

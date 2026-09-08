@@ -537,6 +537,52 @@ export function SettingsPanel({ config, onChange }: SettingsPanelProps) {
                 onCheckedChange={(checked) => updateConfig({ teaserNote: checked })}
               />
             </div>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="bumpCreatedAt">Re-Import: created_at +1s (Update erzwingen)</Label>
+              <Switch
+                id="bumpCreatedAt"
+                checked={config.bumpCreatedAtOnReimport}
+                onCheckedChange={(checked) => updateConfig({ bumpCreatedAtOnReimport: checked })}
+              />
+            </div>
+            <p className="text-xs text-muted-foreground -mt-2 ml-0">
+              Bereits gepostete Artikel werden bei erneutem Veröffentlichen (gleicher d-Tag) ersetzt.
+              Das +1s stellt sicher, dass Relays die neue Version akzeptieren.
+            </p>
+
+            <Separator />
+
+            {/* Kurzbeschreibung */}
+            <div className="space-y-2">
+              <Label>Kurzbeschreibung (summary-Tag, Einleitung auf mojobus.co)</Label>
+              <div className="flex gap-3">
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="summarySentences" className="text-xs text-muted-foreground">Max. Sätze</Label>
+                  <Input
+                    id="summarySentences"
+                    type="number"
+                    value={config.summaryMaxSentences}
+                    onChange={(e) => updateConfig({ summaryMaxSentences: Math.max(1, Math.min(5, parseInt(e.target.value) || 2)) })}
+                    min="1"
+                    max="5"
+                  />
+                </div>
+                <div className="flex-1 space-y-1">
+                  <Label htmlFor="summaryChars" className="text-xs text-muted-foreground">Max. Zeichen (Sicherheitslimit)</Label>
+                  <Input
+                    id="summaryChars"
+                    type="number"
+                    value={config.summaryMaxChars}
+                    onChange={(e) => updateConfig({ summaryMaxChars: Math.max(60, parseInt(e.target.value) || 320) })}
+                    min="60"
+                    max="1000"
+                  />
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Standard: 2 Sätze / 320 Zeichen. „Read More" und „Weiterlesen" werden automatisch entfernt.
+              </p>
+            </div>
           </CardContent>
         </Card>
 

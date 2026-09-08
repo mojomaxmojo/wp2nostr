@@ -47,6 +47,7 @@ import {
   clearImportIndex,
   importIndexStats,
 } from '@/modules/import/ImportIndex';
+import { buildSummary } from '@/modules/import/summary';
 import { useCurrentUser } from '@/hooks/useCurrentUser';
 import { useNostr } from '@nostrify/react';
 import { LoginArea } from '@/components/auth/LoginArea';
@@ -115,6 +116,19 @@ export function WPImportPage() {
 
   const [config, setConfigState] = useState<ImportConfig>(loadConfig());
   const setConfig = (next: ImportConfig) => {
+    // Auswahl bereits importierter Artikel an skipImported anpassen
+    // (für Update-/Reparatur-Läufe: skipImported aus → bereits Importierte werden ausgewählt)
+    if (config.skipImported !== next.skipImported) {
+      setConvertedArticles(prevArticles => {
+        const nextArticles = new Map(prevArticles);
+        nextArticles.forEach((article, postId) => {
+          if (article.alreadyImported) {
+            nextArticles.set(postId, { ...article, selected: !next.skipImported });
+          }
+        });
+        return nextArticles;
+      });
+    }
     setConfigState(next);
     saveConfig(next);
   };
@@ -614,17 +628,29 @@ export function WPImportPage() {
             preserveTags: config.preserveTags,
           });
 
+          const publishedAt = Math.floor(a.post.publishDate.getTime() / 1000);
+
           return {
             title: a.post.title,
             content: a.markdown,
-            summary: a.post.excerpt,
+            // Kurzbeschreibung: max. 2 Sätze, ohne "Read More" (mojobus.co zeigt sie als Einleitung)
+            summary: buildSummary(a.post.excerpt, a.post.content, {
+              maxSentences: config.summaryMaxSentences,
+              maxChars: config.summaryMaxChars,
+            }),
             image: a.featuredBlossomUrl || a.post.featuredImageUrl,
             targetCategoryId: a.targetCategoryId,
             subcategoryId: a.subcategoryId,
             dTag: a.dTag,
             slug: a.post.slug,
             url: a.post.link,
-            publishedAt: Math.floor(a.post.publishDate.getTime() / 1000),
+            publishedAt,
+            // Re-Import bereits geposteter Artikel: created_at +1s
+            // → Relays akzeptieren das Update zuverlässig (published_at bleibt Original)
+            createdAt:
+              config.bumpCreatedAtOnReimport && a.alreadyImported
+                ? publishedAt + 1
+                : undefined,
             tags,
           };
         });
@@ -1207,6 +1233,10 @@ export function WPImportPage() {
                         extraTags={article.extraTags}
                         alreadyImported={article.alreadyImported}
                         featuredImageUrl={article.featuredBlossomUrl || article.post.featuredImageUrl}
+                        summary={buildSummary(article.post.excerpt, article.post.content, {
+                          maxSentences: config.summaryMaxSentences,
+                          maxChars: config.summaryMaxChars,
+                        })}
                       />
                     ))}
                   </div>

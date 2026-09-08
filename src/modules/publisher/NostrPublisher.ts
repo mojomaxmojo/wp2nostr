@@ -30,6 +30,8 @@ export interface ArticleData {
   slug?: string;
   url?: string; // URL des Original-Artikels
   publishedAt?: number; // Unix timestamp (Original-Veröffentlichungsdatum)
+  /** Override für created_at (z.B. publishedAt+1s bei Re-Import, damit Relays das Update akzeptieren) */
+  createdAt?: number;
   tags?: string[][]; // zusammengesetzte t-Tags etc.
 }
 
@@ -158,8 +160,11 @@ export function createArticleEvent(
     return true;
   });
 
-  // created_at = Original-Datum (chronologische Sortierung auf mojobus.co)
-  const createdAt = options.preservePublishDate ? publishedAt : now;
+  // created_at = Original-Datum (chronologische Sortierung auf mojobus.co);
+  // createdAt-Override (Re-Import: +1s) erzwingt zuverlässiges Relay-Update
+  const createdAt = options.preservePublishDate
+    ? (data.createdAt ?? publishedAt)
+    : now;
 
   const event: NostrEvent = {
     kind: target.kind, // 30023

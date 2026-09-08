@@ -29,9 +29,11 @@ export interface ArticlePreviewProps {
   alreadyImported?: boolean;
   /** Titelbild (nach Blossom-Upload die Blossom-URL, sonst WP-Original) */
   featuredImageUrl?: string;
+  /** Gebaute Kurzbeschreibung (max. 2 Sätze) — wird statt dem WP-Excerpt angezeigt */
+  summary?: string;
 }
 
-export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, targetSubcategoryId, extraTags, alreadyImported, featuredImageUrl }: ArticlePreviewProps) {
+export function ArticlePreview({ post, markdownContent, selected, onToggle, onValidate, targetCategoryId, targetSubcategoryId, extraTags, alreadyImported, featuredImageUrl, summary }: ArticlePreviewProps) {
   // Markdown für Vorschau vereinfacht rendern
   const renderMarkdownPreview = (markdown: string) => {
     let html = markdown;
@@ -166,13 +168,15 @@ export function ArticlePreview({ post, markdownContent, selected, onToggle, onVa
           </ScrollArea>
         </div>
 
-        {/* Excerpt */}
-        {post.excerpt && (
-          <div className="mt-4 p-3 bg-muted rounded-md">
-            <p className="text-xs text-muted-foreground mb-1">Auszug:</p>
-            <p className="text-sm">{post.excerpt}</p>
-          </div>
-        )}
+        {/* Kurzbeschreibung (summary-Tag, so erscheint sie auf mojobus.co) */}
+        <div className="mt-4 p-3 bg-muted rounded-md">
+          <p className="text-xs text-muted-foreground mb-1">
+            Kurzbeschreibung (max. {summary?.split(/[.!?…]+(\s|$)/).filter(s => s.trim()).length || '?'} Sätze) — so erscheint die Einleitung auf mojobus.co:
+          </p>
+          <p className="text-sm">
+            {summary || <span className="text-muted-foreground italic">keine (leerer summary-Tag)</span>}
+          </p>
+        </div>
       </CardContent>
     </Card>
   );
