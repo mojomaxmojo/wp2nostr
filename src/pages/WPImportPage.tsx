@@ -604,6 +604,7 @@ export function WPImportPage() {
     addProgressStep(config.dryRun ? 'Dry-Run: Events erzeugen' : 'Artikel veröffentlichen', 'in-progress');
 
     let currentArticles = convertedArticles;
+    let mediaUploadedThisRun = false;
 
     try {
       // Automatischer Media-Upload vor dem Veröffentlichen
@@ -617,6 +618,7 @@ export function WPImportPage() {
             if (mediaResult.uploadedCount > 0) {
               currentArticles = mediaResult.articles;
               setConvertedArticles(currentArticles);
+              mediaUploadedThisRun = true;
               updateProgress({
                 status: 'completed',
                 message: `${mediaResult.uploadedCount}/${mediaResult.foundCount} Medien automatisch hochgeladen`,
@@ -643,6 +645,13 @@ export function WPImportPage() {
               description: 'Artikel werden mit den Original-Bild-URLs von mojobus.org veröffentlicht.',
               variant: 'destructive',
             });
+          }
+
+          // Nach Massen-Upload kurz pausieren, damit die Relay-Rate-Limiter
+          // (HAVEN limits.go) abklingen, bevor die Events kommen
+          if (mediaUploadedThisRun) {
+            updateProgress({ message: 'Kurz pausieren (30s), damit die Relay-Rate-Limits abklingen…' });
+            await new Promise(resolve => setTimeout(resolve, 30000));
           }
         }
       }
@@ -703,8 +712,17 @@ export function WPImportPage() {
 
       const publishToRelay = async (relayUrl: string, event: Parameters<ReturnType<typeof nostr.relay>['event']>[0]) => {
         const relay = nostr.relay(relayUrl);
-        await relay.event(event);
-        return true;
+        // Schutz gegen hängende Verbindungen: max. 60s auf OK-Antwort warten
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Timeout: keine OK-Antwort vom Relay (60s)')), 60000);
+        });
+        try {
+          await Promise.race([relay.event(event), timeout]);
+          return true;
+        } finally {
+          if (timer) clearTimeout(timer);
+        }
       };
 
       const results = await publishArticles(
@@ -733,9 +751,11 @@ export function WPImportPage() {
 
       const successCount = results.filter(r => r.relays.some(relay => relay.success)).length;
 
-      // Erfolgreiche Artikel in den Import-Index aufnehmen (kein Dry-Run)
+      // Erfolgreiche Artikel in den Import-Index aufnehmen (kein Dry-Run,
+      // nur wenn mindestens ein Relay angenommen hat)
       if (!config.dryRun) {
         for (const result of results) {
+          if (!result.relays.some(relay => relay.success)) continue; // Fehlschläge nicht markieren
           const article = selectedArticles.find(a => a.dTag === result.articleId)
             ?? selectedArticles.find(a => result.event.tags.find(([n, v]) => n === 'd' && v === a.dTag));
           if (article) {
@@ -819,7 +839,10 @@ export function WPImportPage() {
         title: config.dryRun ? 'Dry-Run abgeschlossen' : 'Veröffentlichung abgeschlossen',
         description: config.dryRun
           ? `${successCount} Events erzeugt — es wurde nichts gesendet`
-          : `${successCount} Artikel erfolgreich auf Nostr veröffentlicht`,
+          : successCount === 0
+            ? `${successCount}/${selectedArticles.length} veröffentlicht — Details/Fehlerursache im Log-Tab!`
+            : `${successCount} Artikel erfolgreich auf Nostr veröffentlicht`,
+        variant: !config.dryRun && successCount === 0 ? 'destructive' : 'default',
       });
     } catch (error) {
       console.error('Fehler beim Veröffentlichen:', error);

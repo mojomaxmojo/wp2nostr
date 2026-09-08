@@ -352,18 +352,19 @@ export async function publishArticle(
 
   // Prüfen ob mindestens ein Relay erfolgreich war
   const successCount = relayResults.filter(r => r.success).length;
-  if (successCount === 0) {
-    throw new Error('Publish zu allen Relays fehlgeschlagen');
-  }
 
-  // naddr für Ergebnis-Link
-  const naddr = createNaddr(
-    articleId,
-    pubkey,
-    signedEvent.kind,
-    relayResults.filter(r => r.success).map(r => r.url)
-  );
+  // naddr nur bei Erfolg erzeugen
+  const naddr = successCount > 0
+    ? createNaddr(
+        articleId,
+        pubkey,
+        signedEvent.kind,
+        relayResults.filter(r => r.success).map(r => r.url)
+      )
+    : undefined;
 
+  // Bei Totalversagen NICHT werfen — Ergebnis mit Fehlerdetails zurückgeben,
+  // damit UI und Publish-Log die Ursache anzeigen können.
   return {
     articleId,
     eventId: signedEvent.id,
@@ -415,15 +416,36 @@ export async function publishArticles(
       );
 
       results.push(result);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error(`Publish von Artikel "${articles[i].title}" fehlgeschlagen:`, error);
+      // Fehler sichtbar machen (synthetisches Ergebnis), andere Artikel trotzdem versuchen
+      results.push({
+        articleId: articles[i].dTag || `failed-${i}`,
+        eventId: '',
+        relays: [{
+          url: 'publish',
+          success: false,
+          error: errorMessage,
+        }],
+        event: {
+          kind: 30023,
+          content: '',
+          created_at: 0,
+          tags: [['d', articles[i].dTag || `failed-${i}`]],
+          pubkey,
+          id: '',
+          sig: '',
+        } as unknown as NostrEvent,
+      });
+    } finally {
       completed++;
 
-      // Intervall zwischen Posts einhalten (außer beim letzten Artikel / Dry-Run)
+      // Intervall zwischen Posts einhalten (auch nach Fehlern, außer beim
+      // letzten Artikel / Dry-Run) — schont Relay-Rate-Limits
       if (i < articles.length - 1 && options.postInterval > 0 && !options.dryRun) {
         await new Promise(resolve => setTimeout(resolve, options.postInterval));
       }
-    } catch (error) {
-      console.error(`Publish von Artikel "${articles[i].title}" fehlgeschlagen:`, error);
-      // Andere Artikel trotzdem versuchen
     }
   }
 
